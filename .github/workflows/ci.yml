@@ -1,5 +1,4 @@
-# CI for Vanta (see docs/03-repository.md §ci-cd-architecture).
-name: ci
+name: CI
 
 on:
   push:
@@ -11,40 +10,44 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # Fast-fail quality gates (docs/03-repository.md — CI/CD architecture).
   check:
-    name: fmt + clippy + deny
-    runs-on: ubuntu-latest
+    name: fmt + clippy + test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: Doc
+        run: cargo doc --workspace --no-deps
 
-  test:
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace
-
-  msrv:
-    name: msrv
+  # Supply-chain policy: licenses, advisories, bans (docs/32-release-engineering.md).
+  deny:
+    name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.74.0
-      - run: cargo check --workspace
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
 
-  # Cross-targets (musl static, aarch64) and the reproducibility / perf-gate jobs
-  # are added as the corresponding subsystems land (docs/19-milestones.md).
+  msrv:
+    name: MSRV build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.83.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace

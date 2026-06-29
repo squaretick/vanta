@@ -20,3 +20,21 @@ path = "src/bin/vt.rs"
 [dependencies]
 vanta-core = { path = "../vanta-core" }
 vanta-cli = { path = "../vanta-cli" }
+
+# Packaging metadata for `cargo deb` and `cargo generate-rpm` (release.yml).
+# Ships the `vanta`, `vt`, and `vanta-shim` binaries.
+[package.metadata.deb]
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/vanta", "usr/bin/", "755"],
+    ["target/release/vt", "usr/bin/", "755"],
+    ["target/release/vanta-shim", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/vanta", dest = "/usr/bin/vanta", mode = "755" },
+    { source = "target/release/vt", dest = "/usr/bin/vt", mode = "755" },
+    { source = "target/release/vanta-shim", dest = "/usr/bin/vanta-shim", mode = "755" },
+]

@@ -5,16 +5,14 @@ members = ["crates/*", "xtask"]
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.83"
 license = "Apache-2.0"
-repository = "https://github.com/vanta-dev/vanta"
+repository = "https://github.com/squaretick/vanta"
 homepage = "https://vanta.dev"
 
-# Shared dependency versions. Declared centrally and inherited by member crates
-# via `<dep>.workspace = true` (see docs/03-repository.md). The external crates
-# below are the intended set; they are wired into member crates as each subsystem
-# is implemented per docs/19-milestones.md. The scaffold's `vanta-core` is
-# intentionally dependency-free so the workspace builds with only std.
+# Shared dependency versions, declared centrally and inherited by member crates
+# via `<dep>.workspace = true` (see docs/03-repository.md). `vanta-core` is
+# dependency-free so every other crate can depend on it freely.
 [workspace.dependencies]
 # intra-workspace (path) — convenience handles
 vanta-core = { path = "crates/vanta-core" }
