@@ -1,0 +1,23 @@
+[package]
+name = "vanta-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vanta command implementations (the library behind the `vanta` binary)."
+
+# `clap` and the remaining orchestration crates (vanta-env/diag) are wired in as
+# the commands are implemented (Phase 4, docs/19-milestones.md).
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+vanta-registry = { path = "../vanta-registry" }
+vanta-resolve = { path = "../vanta-resolve" }
+vanta-install = { path = "../vanta-install" }
+vanta-env = { path = "../vanta-env" }
+vanta-net = { path = "../vanta-net" }
+vanta-config = { path = "../vanta-config" }
+vanta-lock = { path = "../vanta-lock" }
+vanta-diag = { path = "../vanta-diag" }
+vanta-migrate = { path = "../vanta-migrate" }
+vanta-security = { path = "../vanta-security" }

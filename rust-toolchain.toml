@@ -1,0 +1,6 @@
+# The scaffold builds on stable. Tagged releases pin an exact toolchain for
+# reproducible builds (see docs/32-release-engineering.md). MSRV policy: latest
+# stable minus two (docs/03-repository.md §versioning-policy).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

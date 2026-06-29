@@ -1,0 +1,22 @@
+[package]
+name = "vanta"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vanta — every developer tool, one command. The main CLI binary."
+
+[[bin]]
+name = "vanta"
+path = "src/main.rs"
+
+# `vt` is the short alias; release packaging also installs it as a link, but a
+# real binary target keeps `cargo run --bin vt` working in development.
+[[bin]]
+name = "vt"
+path = "src/bin/vt.rs"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+vanta-cli = { path = "../vanta-cli" }

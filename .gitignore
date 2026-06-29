@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+# Vanta's own home should never be committed from a checkout
+/.vanta

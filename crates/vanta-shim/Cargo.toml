@@ -1,0 +1,20 @@
+[package]
+name = "vanta-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Vanta shim dispatcher: resolves the per-directory tool version and execs the real binary."
+
+# Deliberately minimal dependencies — this binary is on the exec hot path and
+# must start cold in well under a millisecond (docs/10, docs/16). It must NOT
+# depend on the resolver, HTTP, or the WASM host.
+[[bin]]
+name = "vanta-shim"
+path = "src/main.rs"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+vanta-platform = { path = "../vanta-platform" }
+vanta-state = { path = "../vanta-state" }

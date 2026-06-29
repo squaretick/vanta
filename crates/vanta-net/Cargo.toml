@@ -1,0 +1,12 @@
+[package]
+name = "vanta-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HTTP over rustls, parallel/resumable downloads, mirrors, retries, auth"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+reqwest = { workspace = true, features = ["blocking"] }

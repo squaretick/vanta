@@ -1,0 +1,12 @@
+[package]
+name = "vanta-env"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "environment composition, activation, shell-hook generation"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+vanta-store = { path = "../vanta-store" }

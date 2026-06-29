@@ -1,0 +1,15 @@
+[package]
+name = "vanta-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vanta core vocabulary: requests, resolutions, artifacts, store keys, generations, trait seams, and the error taxonomy."
+
+# Intentionally dependency-free in the scaffold (see docs/03-repository.md). serde
+# derives and a semver comparator are added when the resolver/lock land (Phase 1).
+[dependencies]
+
+[dev-dependencies]
+proptest = { workspace = true }

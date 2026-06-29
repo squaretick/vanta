@@ -1,0 +1,13 @@
+[package]
+name = "vanta-diag"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "doctor checks, diagnostics rendering, error-code registry"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+vanta-store = { path = "../vanta-store" }
+vanta-state = { path = "../vanta-state" }

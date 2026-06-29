@@ -1,0 +1,16 @@
+[package]
+name = "vanta-lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vanta.lock model, manifest<->lock reconcile, canonical serialization"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

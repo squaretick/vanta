@@ -1,0 +1,11 @@
+[package]
+name = "vanta-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "provider-author SDK (guest side, for WASM providers)"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }

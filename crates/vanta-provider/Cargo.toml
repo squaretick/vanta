@@ -1,0 +1,16 @@
+[package]
+name = "vanta-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "provider model, builtin providers, Wasmtime host for WASM hooks"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+serde = { workspace = true }
+wasmtime = { workspace = true }
+
+[dev-dependencies]
+wat = { workspace = true }

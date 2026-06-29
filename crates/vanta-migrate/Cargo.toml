@@ -1,0 +1,11 @@
+[package]
+name = "vanta-migrate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "importers: mise/asdf/nvm/pyenv/rbenv/volta/brew/scoop/pkgx"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }

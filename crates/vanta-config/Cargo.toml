@@ -1,0 +1,16 @@
+[package]
+name = "vanta-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vanta.toml + config.toml model, parsing, precedence/merge, span diagnostics"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

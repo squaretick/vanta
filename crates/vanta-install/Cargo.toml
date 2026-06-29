@@ -1,0 +1,21 @@
+[package]
+name = "vanta-install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "install engine: plan/fetch/verify/materialize/link/commit, generations"
+
+[dependencies]
+vanta-core = { path = "../vanta-core" }
+vanta-store = { path = "../vanta-store" }
+vanta-net = { path = "../vanta-net" }
+vanta-state = { path = "../vanta-state" }
+vanta-security = { path = "../vanta-security" }
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+[dev-dependencies]
+vanta-test = { path = "../vanta-test" }
+
