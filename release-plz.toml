@@ -12,7 +12,10 @@ git_release_enable = false
 
 [[package]]
 name = "vanta-test"
-# Internal dev-only test harness (publish = false). Skip it entirely.
+# Internal dev-only test harness. Cargo.toml sets `publish = false`; mirror it
+# here (release-plz defaults `publish = true`, which otherwise conflicts) and
+# skip its git tag/release too.
+publish = false
 release = false
 
 [[package]]
