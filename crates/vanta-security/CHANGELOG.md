@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/squaretick/vanta/compare/vanta-security-v0.0.1...vanta-security-v0.0.2) - 2026-06-30
+
+### Other
+
+- Add official minisign-verified registry
+- Security audit: implement pinned-root trust model
+
 ## [0.0.0](https://github.com/squaretick/vanta/releases/tag/vanta-security-v0.0.0) - 2026-06-29
 
 ### Other
