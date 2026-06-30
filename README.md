@@ -28,10 +28,33 @@ Install two identical binaries: **`vanta`** and its short alias **`vt`**.
 
 ## Install
 
-```sh
-# Shell installer (Linux / macOS) — downloads the prebuilt release binary
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/squaretick/vanta/main/scripts/install.sh | sh
+### Install (prebuilt, no compile)
 
+The fastest path — downloads a verified prebuilt binary, no Rust toolchain
+required. Works on Linux and macOS (x86_64 and arm64):
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/squaretick/vanta/main/scripts/install.sh | sh
+```
+
+The installer detects your OS/arch, downloads the matching release archive,
+verifies its SHA256 checksum, and installs `vanta` and `vt` into `~/.local/bin`
+(override with `INSTALL_DIR=…`). Pin a version with `VANTA_VERSION=v0.1.0`.
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/squaretick/vanta/main/scripts/install.ps1 | iex
+```
+
+Or download the `vanta-<version>-x86_64-pc-windows-msvc.zip` asset from the
+[latest release](https://github.com/squaretick/vanta/releases/latest), unzip it,
+and put `vanta.exe` / `vt.exe` on your `PATH`. (The shell installer above also
+works from Git Bash / MSYS2.)
+
+### Other channels
+
+```sh
 # Cargo (any platform with Rust)
 cargo install vanta
 cargo binstall vanta              # prebuilt binary, no compile

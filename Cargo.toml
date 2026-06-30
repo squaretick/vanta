@@ -30,6 +30,7 @@ vanta-security = { path = "crates/vanta-security", version = "0.0.1" }
 vanta-state = { path = "crates/vanta-state", version = "0.0.1" }
 vanta-diag = { path = "crates/vanta-diag", version = "0.0.1" }
 vanta-cli = { path = "crates/vanta-cli", version = "0.0.1" }
+vanta-ui = { path = "crates/vanta-ui", version = "0.0.1" }
 vanta-sdk = { path = "crates/vanta-sdk", version = "0.0.1" }
 vanta-migrate = { path = "crates/vanta-migrate", version = "0.0.1" }
 vanta-test = { path = "crates/vanta-test", version = "0.0.1" }
@@ -59,6 +60,8 @@ blake2 = "0.10"
 wasmtime = "43"
 wat = "1"
 proptest = "1"
+indicatif = "0.18"
+owo-colors = "4"
 
 [profile.release]
 lto = "thin"

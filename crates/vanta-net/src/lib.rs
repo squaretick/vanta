@@ -20,6 +20,11 @@ use vanta_core::{Area, VtaError, VtaResult};
 /// Maximum number of HTTP redirects to follow (audit M6).
 const MAX_REDIRECTS: usize = 10;
 
+/// A callback invoked with the number of bytes newly written to the destination
+/// as a download streams in. Used to drive a progress bar without this crate
+/// depending on a UI crate. Reported incrementally, chunk by chunk.
+pub type ProgressFn<'a> = dyn Fn(u64) + 'a;
+
 /// A reusable HTTP downloader.
 pub struct Downloader {
     client: Client,
@@ -99,10 +104,23 @@ impl Downloader {
     /// Like [`Downloader::download`] but aborts with an error if more than
     /// `max` bytes would be written (audit M8). `None` means no ceiling.
     pub fn download_capped(&self, url: &str, dest: &Path, max: Option<u64>) -> VtaResult<()> {
+        self.download_capped_with_progress(url, dest, max, None)
+    }
+
+    /// Like [`Downloader::download_capped`], but reports streamed bytes through
+    /// `progress` (e.g. to advance a progress bar). Used for the registry index
+    /// download where the total length is not known in advance.
+    pub fn download_capped_with_progress(
+        &self,
+        url: &str,
+        dest: &Path,
+        max: Option<u64>,
+        progress: Option<&ProgressFn>,
+    ) -> VtaResult<()> {
         self.scheme_ok(url)?;
         let mut last: Option<VtaError> = None;
         for attempt in 0..=self.retries {
-            match self.fetch_one(url, dest, max) {
+            match self.fetch_one(url, dest, max, progress) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     last = Some(e);
@@ -120,13 +138,25 @@ impl Downloader {
     /// verification, so falling through mirrors is safe (`docs/13-offline.md`).
     /// `max`, when set, caps the bytes accepted from any single URL (M8).
     pub fn download_any(&self, urls: &[String], dest: &Path, max: Option<u64>) -> VtaResult<()> {
+        self.download_any_with_progress(urls, dest, max, None)
+    }
+
+    /// Like [`Downloader::download_any`], but reports streamed bytes through
+    /// `progress` so the caller can render a download bar (bytes/total/ETA).
+    pub fn download_any_with_progress(
+        &self,
+        urls: &[String],
+        dest: &Path,
+        max: Option<u64>,
+        progress: Option<&ProgressFn>,
+    ) -> VtaResult<()> {
         let mut last: Option<VtaError> = None;
         for url in urls {
             // L11: never resume across a mirror switch — a stale `.part` from a
             // previous host would otherwise be concatenated with this host's
             // bytes. Start each URL from a clean slate.
             let _ = fs::remove_file(part_path(dest));
-            match self.download_capped(url, dest, max) {
+            match self.download_capped_with_progress(url, dest, max, progress) {
                 Ok(()) => return Ok(()),
                 Err(e) => last = Some(e),
             }
@@ -154,7 +184,13 @@ impl Downloader {
         Ok(())
     }
 
-    fn fetch_one(&self, url: &str, dest: &Path, max: Option<u64>) -> VtaResult<()> {
+    fn fetch_one(
+        &self,
+        url: &str,
+        dest: &Path,
+        max: Option<u64>,
+        progress: Option<&ProgressFn>,
+    ) -> VtaResult<()> {
         let part = part_path(dest);
         let have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
@@ -198,10 +234,12 @@ impl Downloader {
             fs::File::create(&part).map_err(|e| io(&part, e))?
         };
 
+        // Wrap the response so each read chunk drives the progress callback.
+        let mut src = ProgressReader::new(&mut resp, progress);
         let written = match remaining {
             // Read one byte past the limit so we can detect an oversize body.
             Some(limit) => {
-                let mut limited = (&mut resp).take(limit.saturating_add(1));
+                let mut limited = (&mut src).take(limit.saturating_add(1));
                 let n = std::io::copy(&mut limited, &mut file).map_err(|e| {
                     VtaError::new(Area::Net, 1, format!("writing {}: {e}", part.display()))
                 })?;
@@ -215,7 +253,7 @@ impl Downloader {
                 }
                 n
             }
-            None => std::io::copy(&mut resp, &mut file).map_err(|e| {
+            None => std::io::copy(&mut src, &mut file).map_err(|e| {
                 VtaError::new(Area::Net, 1, format!("writing {}: {e}", part.display()))
             })?,
         };
@@ -223,6 +261,32 @@ impl Downloader {
         file.sync_all().ok();
         fs::rename(&part, dest).map_err(|e| io(dest, e))?;
         Ok(())
+    }
+}
+
+/// A `Read` adapter that reports each chunk's byte count through a progress
+/// callback as bytes stream through it. The size-cap and verification logic is
+/// unaffected — this only observes the bytes already being read.
+struct ProgressReader<'a, R> {
+    inner: R,
+    progress: Option<&'a ProgressFn<'a>>,
+}
+
+impl<'a, R> ProgressReader<'a, R> {
+    fn new(inner: R, progress: Option<&'a ProgressFn<'a>>) -> Self {
+        ProgressReader { inner, progress }
+    }
+}
+
+impl<R: Read> Read for ProgressReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            if let Some(cb) = self.progress {
+                cb(n as u64);
+            }
+        }
+        Ok(n)
     }
 }
 

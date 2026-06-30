@@ -4,6 +4,7 @@
 //! resolver, registry, install engine, environment, and diagnostics subsystems.
 #![forbid(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,14 +12,87 @@ use vanta_core::{Area, ExitCode, Platform, Request, StoreKey, VersionReq, VtaErr
 use vanta_install::Engine;
 use vanta_registry::Registry;
 use vanta_resolve::{artifact_for, Resolver};
+use vanta_ui::Progress;
 
 /// The crate version, surfaced by `vanta --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Drives the branded install UI (download bar + phase spinner) for one tool.
+///
+/// Implements [`vanta_install::Reporter`]; the engine calls back as it fetches
+/// and materializes the artifact. The active indicator is swapped in place so a
+/// single line is shown and cleared, leaving only the final `✓` summary.
+struct InstallUi {
+    /// Human label for the tool being installed, e.g. `node 22.3.0`.
+    label: String,
+    bar: RefCell<Option<Progress>>,
+}
+
+impl InstallUi {
+    fn new(label: String) -> InstallUi {
+        InstallUi {
+            label,
+            bar: RefCell::new(None),
+        }
+    }
+
+    /// Emit the final success summary for this tool, clearing any live bar.
+    fn finish_ok(&self, msg: &str) {
+        match self.bar.borrow().as_ref() {
+            Some(bar) => bar.finish_ok(msg),
+            None => vanta_ui::step(msg),
+        }
+    }
+}
+
+impl vanta_install::Reporter for InstallUi {
+    fn fetch_start(&self, total: Option<u64>) {
+        let bar = Progress::new_bar(&format!("downloading {}", self.label), total);
+        *self.bar.borrow_mut() = Some(bar);
+    }
+
+    fn fetch_inc(&self, n: u64) {
+        if let Some(bar) = self.bar.borrow().as_ref() {
+            bar.inc(n);
+        }
+    }
+
+    fn phase(&self, name: &str) {
+        // Swap the download bar for an indeterminate spinner during the
+        // (typically brief) verify/extract phases.
+        let mut slot = self.bar.borrow_mut();
+        if let Some(old) = slot.as_ref() {
+            old.clear();
+        }
+        *slot = Some(Progress::new_spinner(&format!("{name} {}", self.label)));
+    }
+}
+
+/// Install one artifact with a branded progress indicator, printing a concise
+/// `✓ <tool> <version> → <key>` summary on success.
+fn install_with_ui(
+    engine: &Engine,
+    tool: &str,
+    version: &str,
+    artifact: &vanta_core::Artifact,
+) -> VtaResult<StoreKey> {
+    let ui = InstallUi::new(format!("{tool} {version}"));
+    let key = engine.install_artifact_reported(tool, version, artifact, &ui)?;
+    ui.finish_ok(&format!("{tool} {version} → {key}"));
+    Ok(key)
+}
 
 /// Dispatch a parsed argv (without the program name). Returns the process exit code.
 pub fn run(args: &[String]) -> VtaResult<ExitCode> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     let rest: &[String] = args.get(1..).unwrap_or(&[]);
+    // Branded wordmark, once, for interactive top-level runs. `banner` itself
+    // is a no-op unless stdout is a color-capable TTY, so this never pollutes
+    // scriptable/piped output; we additionally skip commands whose output is
+    // consumed by machines or shells.
+    if wants_banner(cmd) {
+        vanta_ui::banner(VERSION);
+    }
     match cmd {
         "--version" | "-V" | "version" => {
             println!("vanta {VERSION}");
@@ -96,9 +170,7 @@ fn cmd_add(rest: &[String]) -> VtaResult<ExitCode> {
                 ),
             )
         })?;
-        println!("installing {} {}", resolution.tool, resolution.version);
-        let key = engine.install_artifact(&resolution.tool, &resolution.version, artifact)?;
-        println!("  ✓ {} {} → {}", resolution.tool, resolution.version, key);
+        install_with_ui(&engine, &resolution.tool, &resolution.version, artifact)?;
     }
     Ok(ExitCode::Ok)
 }
@@ -359,9 +431,12 @@ fn cmd_sync() -> VtaResult<ExitCode> {
                 format!("no artifact for `{tool}` on {}", current.token()),
             )
         })?;
-        println!("syncing {} {}", resolution.tool, resolution.version);
-        let key =
-            engine.install_artifact(&resolution.tool, &resolution.version, current_artifact)?;
+        let key = install_with_ui(
+            &engine,
+            &resolution.tool,
+            &resolution.version,
+            current_artifact,
+        )?;
 
         let mut platform_map = BTreeMap::new();
         for (plat, art) in &resolution.per_platform {
@@ -450,6 +525,7 @@ fn cmd_exec(rest: &[String]) -> VtaResult<ExitCode> {
         eprintln!("usage: vanta exec -- <command> [args]");
         return Ok(ExitCode::Usage);
     }
+    run_header(&cmdv[0], &cmdv[1..]);
     let status = Command::new(&cmdv[0])
         .args(&cmdv[1..])
         .env("PATH", env_path_with_bin()?)
@@ -480,11 +556,12 @@ fn cmd_x(rest: &[String]) -> VtaResult<ExitCode> {
             format!("no artifact for `{}`", resolution.tool),
         )
     })?;
-    engine.install_artifact(&resolution.tool, &resolution.version, artifact)?;
+    install_with_ui(&engine, &resolution.tool, &resolution.version, artifact)?;
 
     let idx = rest.iter().position(|a| a == &spec).unwrap_or(0);
     let args: &[String] = rest.get(idx + 1..).unwrap_or(&[]);
     let tool_bin = home()?.join("bin").join(&resolution.tool);
+    run_header(&resolution.tool, args);
     let status = Command::new(&tool_bin)
         .args(args)
         .env("PATH", env_path_with_bin()?)
@@ -538,6 +615,7 @@ fn cmd_run(rest: &[String]) -> VtaResult<ExitCode> {
                     vanta_config::model::Task::Command(s) => s.clone(),
                     vanta_config::model::Task::Detailed(d) => d.run.clone(),
                 };
+                vanta_ui::running(&cmd);
                 let status = shell_command(&cmd)
                     .env("PATH", env_path_with_bin()?)
                     .status()
@@ -551,6 +629,7 @@ fn cmd_run(rest: &[String]) -> VtaResult<ExitCode> {
     let idx = rest.iter().position(|a| a == &name).unwrap_or(0);
     let args: &[String] = rest.get(idx + 1..).unwrap_or(&[]);
     let tool_bin = home()?.join("bin").join(&name);
+    run_header(&name, args);
     let status = Command::new(&tool_bin)
         .args(args)
         .env("PATH", env_path_with_bin()?)
@@ -568,8 +647,15 @@ fn cmd_bundle(rest: &[String]) -> VtaResult<ExitCode> {
         .cloned()
         .unwrap_or_else(|| "vanta-bundle.vbundle".to_string());
     let engine = Engine::open(home()?)?;
-    let n = engine.bundle_current(Path::new(&out))?;
-    println!("bundled {n} store entries → {out}");
+    let progress = Progress::new_spinner(&format!("bundling active generation → {out}"));
+    let n = match engine.bundle_current(Path::new(&out)) {
+        Ok(n) => n,
+        Err(e) => {
+            progress.finish_err("bundle failed");
+            return Err(e);
+        }
+    };
+    progress.finish_ok(&format!("bundled {n} store entries → {out}"));
     Ok(ExitCode::Ok)
 }
 
@@ -583,8 +669,15 @@ fn cmd_restore(rest: &[String]) -> VtaResult<ExitCode> {
         }
     };
     let engine = Engine::open(home()?)?;
-    let n = engine.restore(Path::new(file))?;
-    println!("restored {n} store entries");
+    let progress = Progress::new_spinner(&format!("restoring bundle {file}"));
+    let n = match engine.restore(Path::new(file)) {
+        Ok(n) => n,
+        Err(e) => {
+            progress.finish_err("restore failed");
+            return Err(e);
+        }
+    };
+    progress.finish_ok(&format!("restored {n} store entries"));
     Ok(ExitCode::Ok)
 }
 
@@ -860,7 +953,7 @@ fn cmd_shell(rest: &[String]) -> VtaResult<ExitCode> {
                 format!("no artifact for `{}`", resolution.tool),
             )
         })?;
-        engine.install_artifact(&resolution.tool, &resolution.version, artifact)?;
+        install_with_ui(&engine, &resolution.tool, &resolution.version, artifact)?;
     }
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(windows) {
@@ -869,10 +962,10 @@ fn cmd_shell(rest: &[String]) -> VtaResult<ExitCode> {
             "/bin/sh".to_string()
         }
     });
-    println!(
-        "entering vanta subshell ({}); type `exit` to leave",
+    vanta_ui::running(&format!(
+        "{shell} (vanta subshell with {} tool(s); type `exit` to leave)",
         specs.len()
-    );
+    ));
     let status = Command::new(shell)
         .env("PATH", env_path_with_bin()?)
         .status()
@@ -927,6 +1020,17 @@ fn env_path_with_bin() -> VtaResult<String> {
     ))
 }
 
+/// Print a single branded header line before a subprocess inherits stdio.
+/// Written to stderr so the child's own stdout stays unpolluted.
+fn run_header(program: &str, args: &[String]) {
+    let mut line = program.to_string();
+    if !args.is_empty() {
+        line.push(' ');
+        line.push_str(&args.join(" "));
+    }
+    vanta_ui::running(&line);
+}
+
 fn shell_command(cmd: &str) -> Command {
     if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -978,6 +1082,27 @@ fn cmd_import(force: bool) -> VtaResult<ExitCode> {
 
 fn has_flag(rest: &[String], flag: &str) -> bool {
     rest.iter().any(|a| a == flag)
+}
+
+/// Whether to show the wordmark banner for `cmd`. Suppressed for machine- or
+/// shell-consumed commands whose output must stay clean (versions, help text,
+/// completion scripts, the `activate` shell hook, `which` paths, and the
+/// `exec` passthrough), even on a TTY. Other commands still only render the
+/// banner when [`vanta_ui::banner`] decides the terminal is interactive.
+fn wants_banner(cmd: &str) -> bool {
+    !matches!(
+        cmd,
+        "--version"
+            | "-V"
+            | "version"
+            | "--help"
+            | "-h"
+            | "help"
+            | "completions"
+            | "activate"
+            | "which"
+            | "exec"
+    )
 }
 
 /// Resolve `$VANTA_HOME` (or `~/.vanta`).
@@ -1046,7 +1171,20 @@ fn load_registry() -> VtaResult<Registry> {
             };
             let pid = std::process::id();
             let tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.toml"));
-            downloader.download_capped(&loc, &tmp, Some(REGISTRY_MAX_BYTES))?;
+            // The index length is not declared up front, so this renders as a
+            // byte-counting spinner rather than a determinate bar.
+            let progress = Progress::new_bar("fetching registry index", None);
+            let dl = downloader.download_capped_with_progress(
+                &loc,
+                &tmp,
+                Some(REGISTRY_MAX_BYTES),
+                Some(&|n| progress.inc(n)),
+            );
+            if let Err(e) = dl {
+                progress.finish_err("registry index download failed");
+                return Err(e);
+            }
+            progress.finish_ok("fetched registry index");
             let index_bytes = std::fs::read(&tmp)
                 .map_err(|e| VtaError::new(Area::Reg, 1, format!("reading index: {e}")))?;
 

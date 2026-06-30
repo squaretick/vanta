@@ -21,3 +21,4 @@ vanta-lock.workspace = true
 vanta-diag.workspace = true
 vanta-migrate.workspace = true
 vanta-security.workspace = true
+vanta-ui.workspace = true

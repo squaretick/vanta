@@ -18,6 +18,29 @@ use vanta_security::Policy;
 use vanta_state::{GenerationRecord, State, StoreEntryMeta};
 use vanta_store::Store;
 
+/// Observes the progress of an [`Engine::install_artifact_reported`] run so a
+/// caller (the CLI) can render download bars and phase spinners without this
+/// crate depending on a UI crate. All methods have no-op defaults; the unit
+/// type `()` implements it as a fully silent reporter.
+pub trait Reporter {
+    /// The fetch stage is about to begin; `total` is the artifact's declared
+    /// size in bytes when known (used as the download bar's length).
+    fn fetch_start(&self, total: Option<u64>) {
+        let _ = total;
+    }
+    /// `n` more bytes have been downloaded.
+    fn fetch_inc(&self, n: u64) {
+        let _ = n;
+    }
+    /// A new post-fetch phase has begun (e.g. `"verifying"`, `"extracting"`).
+    fn phase(&self, name: &str) {
+        let _ = name;
+    }
+}
+
+/// Silent reporter: the default when no progress UI is wired in.
+impl Reporter for () {}
+
 /// Default ceiling on the total decompressed size of an archive (audit M8). A
 /// gzip bomb that would expand past this aborts extraction rather than filling
 /// the disk. Overridable via [`Engine::with_max_decompressed`].
@@ -83,6 +106,18 @@ impl Engine {
         version: &str,
         artifact: &Artifact,
     ) -> VtaResult<StoreKey> {
+        self.install_artifact_reported(tool, version, artifact, &())
+    }
+
+    /// Like [`Engine::install_artifact`], but drives `reporter` with download
+    /// byte counts and phase transitions so a caller can render progress.
+    pub fn install_artifact_reported(
+        &self,
+        tool: &str,
+        version: &str,
+        artifact: &Artifact,
+        reporter: &dyn Reporter,
+    ) -> VtaResult<StoreKey> {
         // Policy precheck (audit H2): when a signature is required, an artifact
         // lacking a signature OR a *trusted* signing key (the resolver drops
         // untrusted keys, audit C1) is refused — fail-closed, before any I/O.
@@ -121,9 +156,16 @@ impl Engine {
             .join(format!("incoming-{tool}-{}", std::process::id()));
         let mut urls = vec![artifact.url.clone()];
         urls.extend(artifact.mirrors.clone());
-        self.downloader.download_any(&urls, &dl, artifact.size)?;
+        reporter.fetch_start(artifact.size);
+        self.downloader.download_any_with_progress(
+            &urls,
+            &dl,
+            artifact.size,
+            Some(&|n| reporter.fetch_inc(n)),
+        )?;
 
         // [5 Verify] — fail closed (centralized in vanta-security).
+        reporter.phase("verifying");
         if let Err(e) =
             vanta_security::verify_file(&dl, &artifact.checksum.algo, &artifact.checksum.value)
         {
@@ -143,6 +185,7 @@ impl Engine {
         }
 
         // [6 Materialize]
+        reporter.phase("extracting");
         let staging = self.store.new_staging()?;
         let name = artifact
             .bin

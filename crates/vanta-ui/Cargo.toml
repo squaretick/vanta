@@ -1,0 +1,12 @@
+[package]
+name = "vanta-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Branded terminal UI for the vanta CLI: wordmark banner, progress bars, status lines (TTY/NO_COLOR-aware)."
+
+[dependencies]
+indicatif.workspace = true
+owo-colors.workspace = true
