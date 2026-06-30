@@ -1,13 +1,9 @@
-<p align="center">
-  <a href="https://crates.io/crates/vanta"><img src="assets/banner.svg" alt="Vanta — every developer tool, one command" width="820"></a>
-</p>
 
 # Vanta
 
 [![crates.io](https://img.shields.io/crates/v/vanta.svg)](https://crates.io/crates/vanta)
 [![release](https://img.shields.io/github/v/release/squaretick/vanta?filter=!vanta-*&sort=semver)](https://github.com/squaretick/vanta/releases/latest)
 [![crates.io downloads](https://img.shields.io/crates/d/vanta.svg)](https://crates.io/crates/vanta)
-[![release downloads](https://img.shields.io/github/downloads/squaretick/vanta/total.svg)](https://github.com/squaretick/vanta/releases)
 [![docs.rs](https://img.shields.io/docsrs/vanta-core)](https://docs.rs/vanta-core)
 [![CI](https://github.com/squaretick/vanta/actions/workflows/ci.yml/badge.svg)](https://github.com/squaretick/vanta/actions/workflows/ci.yml)
 [![MSRV](https://img.shields.io/badge/rustc-1.83%2B-orange.svg)](https://www.rust-lang.org)
