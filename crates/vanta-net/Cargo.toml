@@ -10,3 +10,6 @@ description = "HTTP over rustls, parallel/resumable downloads, mirrors, retries,
 [dependencies]
 vanta-core.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
+
+[dev-dependencies]
+vanta-test.workspace = true

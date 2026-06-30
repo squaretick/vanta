@@ -22,6 +22,19 @@ pub struct Registry {
     /// tool name → entry.
     #[serde(default)]
     pub tools: BTreeMap<String, ToolEntry>,
+
+    /// Whether this index was authenticated against a pinned trust root (audit
+    /// C1). Set by the loader after a detached-signature check; never read from
+    /// the index document itself (hence `#[serde(skip)]`). When `true`, the
+    /// per-tool `public_key` values may be trusted transitively.
+    #[serde(skip)]
+    pub index_verified: bool,
+
+    /// The pinned root public-key texts the loader checked this index against.
+    /// Carried so the resolver can apply the "key is itself pinned" branch of
+    /// the trust model. Never sourced from the index (hence `#[serde(skip)]`).
+    #[serde(skip)]
+    pub trusted_root_keys: Vec<String>,
 }
 
 /// One tool's provider and version list.

@@ -11,4 +11,5 @@ description = "request to resolution, version ordering, constraints, dependency 
 vanta-core.workspace = true
 vanta-registry.workspace = true
 vanta-provider.workspace = true
+vanta-security.workspace = true
 semver = { workspace = true }

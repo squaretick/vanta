@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod sign;
+pub mod trust;
 pub use sign::{minisign_verify, parse_minisign_pubkey, MinisignKey};
 
 use serde::{Deserialize, Serialize};

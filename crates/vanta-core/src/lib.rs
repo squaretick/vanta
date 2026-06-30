@@ -68,8 +68,15 @@ mod tests {
 
     #[test]
     fn store_key_validation() {
-        assert!(StoreKey::new("blake3-aa3f").is_ok());
+        let hex = "a".repeat(64);
+        assert!(StoreKey::new(format!("blake3-{hex}")).is_ok());
         assert!(StoreKey::new("sha1-deadbeef").is_err());
+        // M7: suffix must be exactly 64 lowercase hex chars — reject traversal,
+        // wrong length, and uppercase.
+        assert!(StoreKey::new("blake3-../../etc").is_err());
+        assert!(StoreKey::new("blake3-aa3f").is_err()); // too short
+        assert!(StoreKey::new(format!("blake3-{}", "A".repeat(64))).is_err()); // uppercase
+        assert!(StoreKey::new(format!("blake3-{}", "a".repeat(63))).is_err());
     }
 
     #[test]

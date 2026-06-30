@@ -106,12 +106,12 @@ mod tests {
     fn env_id_is_order_independent_and_stable() {
         let a = EnvTool {
             tool: "node".into(),
-            key: StoreKey::new("blake3-aa").unwrap(),
+            key: StoreKey::new(format!("blake3-{}", "a".repeat(64))).unwrap(),
             bins: vec![],
         };
         let b = EnvTool {
             tool: "go".into(),
-            key: StoreKey::new("blake3-bb").unwrap(),
+            key: StoreKey::new(format!("blake3-{}", "b".repeat(64))).unwrap(),
             bins: vec![],
         };
         let id1 = env_id(&[a.clone(), b.clone()]);

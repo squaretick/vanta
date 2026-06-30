@@ -2351,6 +2351,7 @@ version = "0.0.1"
 dependencies = [
  "reqwest",
  "vanta-core",
+ "vanta-test",
 ]
 
 [[package]]
@@ -2388,6 +2389,7 @@ dependencies = [
  "vanta-core",
  "vanta-provider",
  "vanta-registry",
+ "vanta-security",
 ]
 
 [[package]]

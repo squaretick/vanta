@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use vanta_core::StoreKey;
 use vanta_state::State;
 
 fn main() -> ExitCode {
@@ -48,7 +49,10 @@ fn dispatch(name: &str, args: &[String]) -> Result<ExitCode, String> {
         .iter()
         .find(|(tool, _)| tool == name)
         .ok_or_else(|| format!("`{name}` is not managed by vanta"))?;
-    let entry = home.join("store").join(key);
+    // L12/M7: validate the key shape before joining it onto the store path so a
+    // malformed generation record cannot traverse out of the store.
+    let key = StoreKey::new(key.clone()).map_err(|e| e.to_string())?;
+    let entry = home.join("store").join(key.as_str());
     let bin = find_bin(&entry, name)
         .ok_or_else(|| format!("executable for `{name}` not found in {}", entry.display()))?;
     exec(&bin, args)

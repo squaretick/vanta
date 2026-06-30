@@ -16,16 +16,37 @@ pub type ToolName = String;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StoreKey(String);
 
+/// The number of lowercase hex characters in a BLAKE3-256 digest (32 bytes).
+const BLAKE3_HEX_LEN: usize = 64;
+
 impl StoreKey {
-    /// Construct a store key, validating the `blake3-` prefix.
+    /// Construct a store key, validating the `blake3-` prefix **and** that the
+    /// suffix is exactly [`BLAKE3_HEX_LEN`] lowercase hex characters.
+    ///
+    /// This is a security boundary (audit M7/L12): the key is later joined onto
+    /// filesystem paths (`store/<key>`, `staging/<key>`, the shim's
+    /// `store.join(key)`). Accepting anything but a fixed-width lowercase-hex
+    /// digest would allow path-traversal payloads such as `blake3-../../etc` to
+    /// flow into those joins. We therefore reject any non-conforming suffix
+    /// rather than trusting the prefix alone.
     pub fn new(s: impl Into<String>) -> VtaResult<StoreKey> {
         let s = s.into();
-        if !s.starts_with("blake3-") || s.len() <= "blake3-".len() {
-            return Err(VtaError::new(
+        let invalid = |s: &str| {
+            VtaError::new(
                 Area::Store,
                 1,
-                format!("invalid store key `{s}` (expected `blake3-<hex>`)"),
-            ));
+                format!(
+                    "invalid store key `{s}` (expected `blake3-<{BLAKE3_HEX_LEN} lowercase hex>`)"
+                ),
+            )
+        };
+        let suffix = s.strip_prefix("blake3-").ok_or_else(|| invalid(&s))?;
+        if suffix.len() != BLAKE3_HEX_LEN
+            || !suffix
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid(&s));
         }
         Ok(StoreKey(s))
     }

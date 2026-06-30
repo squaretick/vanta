@@ -8,7 +8,12 @@
 //! ABI (scoped `http-get`, `hash`) builds on this primitive.
 
 use vanta_core::{Area, VtaError, VtaResult};
-use wasmtime::{Config, Engine, Instance, Module, Store};
+use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimitsBuilder};
+
+/// Memory ceiling for a guest instance (audit L10): caps `memory.grow` so a
+/// guest cannot exhaust host RAM (`memory.grow` past this fails instead of
+/// climbing toward the 4 GiB wasm32 maximum).
+const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
 
 /// A capability-free WASM sandbox.
 pub struct Sandbox {
@@ -29,8 +34,17 @@ impl Sandbox {
     /// (no ambient authority is granted); the call traps cleanly if it exhausts
     /// its fuel. Compute-only hooks use this; richer hooks extend the host set.
     pub fn run_i32(&self, wasm: &[u8], func: &str, arg: i32, fuel: u64) -> VtaResult<i32> {
+        // TODO(security, L10): provider modules are currently unsigned. Before
+        // instantiating untrusted modules in production, verify `wasm` against a
+        // pinned provider-signing key (reusing `vanta-security`'s minisign
+        // verification) so only vetted hooks ever reach `Module::new`.
         let module = Module::new(&self.engine, wasm).map_err(|e| err(format!("compile: {e}")))?;
-        let mut store = Store::new(&self.engine, ());
+        // L10: bound guest memory so `memory.grow` cannot exhaust host RAM.
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(MAX_MEMORY_BYTES)
+            .build();
+        let mut store = Store::new(&self.engine, limits);
+        store.limiter(|state| state as &mut dyn wasmtime::ResourceLimiter);
         store
             .set_fuel(fuel)
             .map_err(|e| err(format!("set fuel: {e}")))?;

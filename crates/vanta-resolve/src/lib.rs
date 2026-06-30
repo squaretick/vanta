@@ -62,7 +62,23 @@ impl<'a> Resolver<'a> {
                         .provider
                         .render_artifact(&chosen.version, platform, checksum, pc.size);
                 artifact.signature = pc.signature.clone();
-                artifact.signature_key = entry.public_key.clone();
+                // C1: the per-artifact signing key is only trusted if the index
+                // that carried it was authenticated against a pinned root
+                // (transitive trust), or the key is itself pinned. Otherwise it
+                // is attacker-influenceable, so we drop it (`None`) — the install
+                // engine then treats the artifact as unsigned and, under a
+                // signature-requiring policy, refuses it (fail-closed).
+                artifact.signature_key = entry
+                    .public_key
+                    .as_deref()
+                    .filter(|k| {
+                        vanta_security::trust::artifact_key_is_trusted(
+                            k,
+                            self.registry.index_verified,
+                            &self.registry.trusted_root_keys,
+                        )
+                    })
+                    .map(str::to_string);
                 per_platform.push((*platform, artifact));
             }
         }
@@ -232,5 +248,54 @@ sha256 = "00"
         let err = resolve("node@99").unwrap_err();
         assert_eq!(err.area, Area::Res);
         assert_eq!(err.number, 1);
+    }
+
+    // C1: a registry index carries a per-tool `public_key`. It must only be
+    // propagated as a trusted signing key when the index was authenticated
+    // against a pinned root (or the key is itself pinned).
+    const SIGNED_SAMPLE: &str = r#"
+[tools.node]
+public_key = "untrusted comment: attacker\nRWQfattackerkeytext=="
+
+[tools.node.provider]
+id = "official/node"
+tool = "node"
+url_template = "https://nodejs.org/dist/v{version}/node-v{version}-{os}-{arch}.{ext}"
+archive = "tar.gz"
+bin = ["bin/node"]
+
+[[tools.node.version]]
+version = "24.6.0"
+channel = "stable"
+[tools.node.version.platforms."macos/aarch64"]
+sha256 = "66"
+signature = "untrusted comment: sig\nRWQfsig=="
+"#;
+
+    #[test]
+    fn attacker_key_with_unsigned_index_is_dropped() {
+        // Index NOT verified against a pinned root → the attacker-supplied
+        // signing key must not be trusted.
+        let reg = Registry::from_toml(SIGNED_SAMPLE).unwrap();
+        assert!(!reg.index_verified);
+        let resolver = Resolver::new(&reg);
+        let res = resolver
+            .resolve(&Request::parse("node@24.6.0").unwrap(), &[mac()])
+            .unwrap();
+        let art = artifact_for(&res, &mac()).unwrap();
+        assert_eq!(art.signature_key, None); // untrusted key rejected
+    }
+
+    #[test]
+    fn key_from_verified_index_is_trusted() {
+        // Index verified against a pinned root → its key is trusted transitively.
+        let mut reg = Registry::from_toml(SIGNED_SAMPLE).unwrap();
+        reg.index_verified = true;
+        let resolver = Resolver::new(&reg);
+        let res = resolver
+            .resolve(&Request::parse("node@24.6.0").unwrap(), &[mac()])
+            .unwrap();
+        let art = artifact_for(&res, &mac()).unwrap();
+        assert!(art.signature_key.is_some());
     }
 }

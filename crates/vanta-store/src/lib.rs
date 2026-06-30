@@ -83,6 +83,17 @@ impl Store {
         Ok(key)
     }
 
+    /// Remove a store entry (used when a store hit fails re-verification, audit
+    /// H4). No-op if the entry is absent.
+    pub fn remove_entry(&self, key: &StoreKey) -> VtaResult<()> {
+        let path = self.entry_path(key);
+        if path.exists() {
+            let _ = make_writable_recursive(&path);
+            fs::remove_dir_all(&path).map_err(|e| io(&path, e))?;
+        }
+        Ok(())
+    }
+
     /// Re-hash an entry and confirm it still matches its key (integrity check).
     pub fn verify_entry(&self, key: &StoreKey) -> VtaResult<bool> {
         let path = self.entry_path(key);

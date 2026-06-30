@@ -83,7 +83,7 @@ fn cmd_add(rest: &[String]) -> VtaResult<ExitCode> {
     }
 
     // Install.
-    let engine = Engine::open(home()?)?;
+    let engine = open_engine()?;
     for resolution in &resolutions {
         let artifact = artifact_for(resolution, &platform).ok_or_else(|| {
             VtaError::new(
@@ -305,6 +305,12 @@ fn cmd_doctor() -> VtaResult<ExitCode> {
 /// declared target the registry can serve (`docs/11-reproducibility.md`).
 fn cmd_sync() -> VtaResult<ExitCode> {
     let manifest_path = find_manifest()?;
+    // M9: syncing executes a manifest's declared tool set; gate it on the trust
+    // list (TOFU) so a freshly-cloned, untrusted manifest cannot silently drive
+    // installs.
+    if !ensure_manifest_trusted(&manifest_path)? {
+        return Ok(ExitCode::Usage);
+    }
     let manifest = vanta_config::load_file(&manifest_path)?;
     if manifest.tools.is_empty() {
         println!(
@@ -331,7 +337,7 @@ fn cmd_sync() -> VtaResult<ExitCode> {
 
     let registry = load_registry()?;
     let resolver = Resolver::new(&registry);
-    let engine = Engine::open(home()?)?;
+    let engine = open_engine()?;
     let mut lock = vanta_lock::Lock::new(
         format!("vanta {VERSION}"),
         platforms.iter().map(|p| p.token()).collect(),
@@ -466,7 +472,7 @@ fn cmd_x(rest: &[String]) -> VtaResult<ExitCode> {
     let resolver = Resolver::new(&registry);
     let platform = Platform::current();
     let resolution = resolver.resolve(&request, &[platform])?;
-    let engine = Engine::open(home()?)?;
+    let engine = open_engine()?;
     let artifact = artifact_for(&resolution, &platform).ok_or_else(|| {
         VtaError::new(
             Area::Res,
@@ -522,6 +528,12 @@ fn cmd_run(rest: &[String]) -> VtaResult<ExitCode> {
     if let Ok(manifest_path) = find_manifest() {
         if let Ok(manifest) = vanta_config::load_file(&manifest_path) {
             if let Some(task) = manifest.tasks.get(&name) {
+                // M9: a manifest task runs an arbitrary shell command. Refuse to
+                // run it from an untrusted manifest (a hostile cloned repo) until
+                // the operator trusts it.
+                if !ensure_manifest_trusted(&manifest_path)? {
+                    return Ok(ExitCode::Usage);
+                }
                 let cmd = match task {
                     vanta_config::model::Task::Command(s) => s.clone(),
                     vanta_config::model::Task::Detailed(d) => d.run.clone(),
@@ -733,6 +745,59 @@ fn cmd_trust(rest: &[String]) -> VtaResult<ExitCode> {
     Ok(ExitCode::Ok)
 }
 
+/// Whether a manifest's content hash has been recorded as trusted (TOFU).
+fn manifest_is_trusted(trust_dir: &Path, hash: &str) -> bool {
+    trust_dir.join(hash).is_file()
+}
+
+/// Gate execution on the trust list (audit M9). Returns `Ok(true)` if the
+/// manifest is trusted (or the operator approves), `Ok(false)` to refuse.
+///
+/// Policy: already-trusted manifests pass silently. An untrusted manifest is
+/// **refused** in a non-interactive context (fail-closed) and **prompted** when
+/// stdin is a terminal; on a "yes" reply it is recorded as trusted and allowed.
+/// `VANTA_ASSUME_TRUST=1` approves non-interactively (for CI that opts in).
+fn ensure_manifest_trusted(manifest_path: &Path) -> VtaResult<bool> {
+    use std::io::IsTerminal;
+    let trust_dir = home()?.join("trust");
+    let hash = vanta_security::sha256_file(manifest_path)?;
+    if manifest_is_trusted(&trust_dir, &hash) {
+        return Ok(true);
+    }
+    let assume = matches!(
+        std::env::var("VANTA_ASSUME_TRUST").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    let approved = if assume {
+        true
+    } else if std::io::stdin().is_terminal() {
+        eprint!(
+            "vanta: {} is not trusted. Trust it and continue? [y/N] ",
+            manifest_path.display()
+        );
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok();
+        matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    } else {
+        false
+    };
+    if approved {
+        std::fs::create_dir_all(&trust_dir)
+            .map_err(|e| VtaError::new(Area::Vrf, 3, format!("trust dir: {e}")))?;
+        let _ = std::fs::write(trust_dir.join(&hash), manifest_path.display().to_string());
+        Ok(true)
+    } else {
+        eprintln!(
+            "vanta: refusing to use untrusted manifest {} \
+             (run `vanta trust` to approve it)",
+            manifest_path.display()
+        );
+        Ok(false)
+    }
+}
+
 /// `vanta registry <list|add <name> <url>>` — manage configured registries.
 fn cmd_registry(rest: &[String]) -> VtaResult<ExitCode> {
     let nonflags: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
@@ -784,7 +849,7 @@ fn cmd_shell(rest: &[String]) -> VtaResult<ExitCode> {
     let registry = load_registry()?;
     let resolver = Resolver::new(&registry);
     let platform = Platform::current();
-    let engine = Engine::open(home()?)?;
+    let engine = open_engine()?;
     for spec in &specs {
         let request = Request::parse(spec)?;
         let resolution = resolver.resolve(&request, &[platform])?;
@@ -932,21 +997,145 @@ fn home() -> VtaResult<PathBuf> {
     Ok(PathBuf::from(base).join(".vanta"))
 }
 
-/// Load the registry: an HTTP(S) URL or a local file via `$VANTA_REGISTRY`, else
-/// the built-in index. A network registry is fetched (mirror/retry-aware) and parsed.
+/// Hard ceiling on the registry index download (defense against an oversized
+/// index served by a hostile endpoint).
+const REGISTRY_MAX_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
+
+/// Whether the operator has explicitly opted into insecure registry handling
+/// (`VANTA_INSECURE_REGISTRY=1`). DANGEROUS: this disables both the HTTPS
+/// requirement and the pinned-root signature requirement on a network registry,
+/// reducing the index to its (attacker-influenceable) contents. Per-artifact
+/// signing keys are still treated as unverified unless individually pinned.
+fn registry_insecure_optin() -> bool {
+    matches!(
+        std::env::var("VANTA_INSECURE_REGISTRY").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+/// Load the registry (audit C1: pinned-root trust model).
+///
+/// * A network (`$VANTA_REGISTRY`) index must be served over `https` and must
+///   carry a detached signature (`<url>.minisig`) that verifies against a pinned
+///   root key (compiled-in or `~/.vanta/trust/roots.toml`). On success the index
+///   is marked verified so the resolver may trust the per-tool signing keys it
+///   carries (transitive trust). Both requirements can be waived only via the
+///   documented, dangerous `VANTA_INSECURE_REGISTRY` opt-in.
+/// * A local-file index (`$VANTA_REGISTRY=/path`) is user-owned and treated as
+///   trusted.
+/// * With no `$VANTA_REGISTRY`, the (empty) built-in index is used.
 fn load_registry() -> VtaResult<Registry> {
+    let roots = vanta_security::trust::load_root_keys(&home()?.join("trust"));
     match std::env::var("VANTA_REGISTRY") {
         Ok(loc) if loc.starts_with("http://") || loc.starts_with("https://") => {
-            let tmp =
-                std::env::temp_dir().join(format!("vanta-registry-{}.toml", std::process::id()));
-            vanta_net::Downloader::new()?.download(&loc, &tmp)?;
-            let registry = Registry::load_file(&tmp);
+            let insecure = registry_insecure_optin();
+            if loc.starts_with("http://") && !insecure {
+                return Err(VtaError::new(
+                    Area::Reg,
+                    5,
+                    format!(
+                        "refusing plaintext http registry {loc} (https required; \
+                         set VANTA_INSECURE_REGISTRY=1 to override — DANGEROUS)"
+                    ),
+                ));
+            }
+            let downloader = if insecure {
+                vanta_net::Downloader::insecure()?
+            } else {
+                vanta_net::Downloader::new()?
+            };
+            let pid = std::process::id();
+            let tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.toml"));
+            downloader.download_capped(&loc, &tmp, Some(REGISTRY_MAX_BYTES))?;
+            let index_bytes = std::fs::read(&tmp)
+                .map_err(|e| VtaError::new(Area::Reg, 1, format!("reading index: {e}")))?;
+
+            // Authenticate the index against a pinned root before trusting it.
+            let sig_url = format!("{loc}.minisig");
+            let sig_tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.minisig"));
+            let signature = downloader
+                .download_capped(&sig_url, &sig_tmp, Some(1024 * 1024))
+                .ok()
+                .and_then(|_| std::fs::read_to_string(&sig_tmp).ok());
+            let _ = std::fs::remove_file(&sig_tmp);
+            let index_verified = signature
+                .as_deref()
+                .map(|s| vanta_security::trust::index_signed_by_root(&index_bytes, s, &roots))
+                .unwrap_or(false);
+
+            if !index_verified && !insecure {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(VtaError::new(
+                    Area::Reg,
+                    6,
+                    format!(
+                        "registry index {loc} is not signed by a pinned trust root \
+                         (expected detached signature at {loc}.minisig). Refusing to trust it. \
+                         Add a root to ~/.vanta/trust/roots.toml, or set \
+                         VANTA_INSECURE_REGISTRY=1 to override — DANGEROUS."
+                    ),
+                ));
+            }
+            if insecure && !index_verified {
+                eprintln!(
+                    "vanta: WARNING — using unverified registry {loc} (VANTA_INSECURE_REGISTRY). \
+                     Per-artifact signing keys will be treated as untrusted."
+                );
+            }
+
+            let src = String::from_utf8(index_bytes)
+                .map_err(|e| VtaError::new(Area::Reg, 2, format!("index is not UTF-8: {e}")))?;
             let _ = std::fs::remove_file(&tmp);
-            registry
+            let mut registry = Registry::from_toml(&src)?;
+            registry.index_verified = index_verified;
+            registry.trusted_root_keys = roots;
+            Ok(registry)
         }
-        Ok(path) => Registry::load_file(Path::new(&path)),
+        Ok(path) => {
+            // A local, user-owned index is trusted (the operator chose it).
+            let mut registry = Registry::load_file(Path::new(&path))?;
+            registry.index_verified = true;
+            registry.trusted_root_keys = roots;
+            Ok(registry)
+        }
         Err(_) => Ok(Registry::builtin()),
     }
+}
+
+/// Build the install [`Policy`] from configuration (audit H2). Reads
+/// `settings.verify` from the global `~/.vanta/config.toml` and, if present, the
+/// nearest project manifest (project wins). `verify = "require"` (and synonyms)
+/// makes a missing/untrusted signature a hard error. The default (no setting)
+/// stays backward-compatible: checksum-gated, signatures verified when present.
+fn install_policy() -> vanta_security::Policy {
+    let mut policy = vanta_security::Policy::default();
+    let mut verify: Option<String> = None;
+    if let Ok(h) = home() {
+        if let Ok(m) = vanta_config::load_file(&h.join("config.toml")) {
+            verify = m.settings.verify;
+        }
+    }
+    if let Ok(path) = find_manifest() {
+        if let Ok(m) = vanta_config::load_file(&path) {
+            if m.settings.verify.is_some() {
+                verify = m.settings.verify;
+            }
+        }
+    }
+    if let Some(v) = verify {
+        if matches!(
+            v.to_ascii_lowercase().as_str(),
+            "require" | "required" | "signature" | "strict"
+        ) {
+            policy.require_signature = true;
+        }
+    }
+    policy
+}
+
+/// Open the install engine wired with the configured verification policy.
+fn open_engine() -> VtaResult<Engine> {
+    Engine::open_with_policy(home()?, install_policy())
 }
 
 fn print_help() {
@@ -1000,5 +1189,23 @@ mod tests {
             run(&["search".into(), "node".into()]).unwrap(),
             ExitCode::Ok
         );
+    }
+
+    // M9: the trust gate recognizes a recorded manifest hash and refuses one
+    // that was never trusted.
+    #[test]
+    fn trust_list_gates_untrusted_manifest() {
+        let dir = std::env::temp_dir().join(format!("vanta-cli-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hash = "a".repeat(64);
+        // Nothing recorded yet → untrusted.
+        assert!(!manifest_is_trusted(&dir, &hash));
+        // Record the hash (as `vanta trust` would) → trusted.
+        std::fs::write(dir.join(&hash), "manifest path").unwrap();
+        assert!(manifest_is_trusted(&dir, &hash));
+        // A different manifest's hash remains untrusted.
+        assert!(!manifest_is_trusted(&dir, &"b".repeat(64)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

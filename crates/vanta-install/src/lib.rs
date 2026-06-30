@@ -10,11 +10,18 @@
 #![forbid(unsafe_code)]
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use vanta_core::{Area, Artifact, Platform, StoreKey, VtaError, VtaResult};
 use vanta_net::Downloader;
+use vanta_security::Policy;
 use vanta_state::{GenerationRecord, State, StoreEntryMeta};
 use vanta_store::Store;
+
+/// Default ceiling on the total decompressed size of an archive (audit M8). A
+/// gzip bomb that would expand past this aborts extraction rather than filling
+/// the disk. Overridable via [`Engine::with_max_decompressed`].
+pub const DEFAULT_MAX_DECOMPRESSED: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /// The install engine, bound to a `$VANTA_HOME`.
 pub struct Engine {
@@ -22,11 +29,23 @@ pub struct Engine {
     state: State,
     downloader: Downloader,
     home: PathBuf,
+    /// Verification policy (audit H2). When `require_signature` is set, a missing
+    /// or untrusted signature is a hard error (fail-closed).
+    policy: Policy,
+    /// Hard ceiling on decompressed archive bytes (audit M8).
+    max_decompressed: u64,
 }
 
 impl Engine {
-    /// Open the engine over `home` (`$VANTA_HOME`).
+    /// Open the engine over `home` (`$VANTA_HOME`) with the default (permissive)
+    /// policy — checksum-gated, signatures verified when present. Use
+    /// [`Engine::open_with_policy`] to require signatures.
     pub fn open(home: impl AsRef<Path>) -> VtaResult<Engine> {
+        Self::open_with_policy(home, Policy::default())
+    }
+
+    /// Open the engine with an explicit verification [`Policy`] (audit H2).
+    pub fn open_with_policy(home: impl AsRef<Path>, policy: Policy) -> VtaResult<Engine> {
         let home = home.as_ref().to_path_buf();
         let store = Store::open(&home)?;
         let state = State::open(&home.join("state.db"))?;
@@ -36,7 +55,15 @@ impl Engine {
             state,
             downloader,
             home,
+            policy,
+            max_decompressed: DEFAULT_MAX_DECOMPRESSED,
         })
+    }
+
+    /// Override the decompressed-size ceiling (audit M8).
+    pub fn with_max_decompressed(mut self, max: u64) -> Self {
+        self.max_decompressed = max;
+        self
     }
 
     /// Borrow the underlying store / state (for `gc`, `which`, etc.).
@@ -56,23 +83,45 @@ impl Engine {
         version: &str,
         artifact: &Artifact,
     ) -> VtaResult<StoreKey> {
-        // [3 Plan] — if the lock already named a key and it is present, reuse it.
+        // Policy precheck (audit H2): when a signature is required, an artifact
+        // lacking a signature OR a *trusted* signing key (the resolver drops
+        // untrusted keys, audit C1) is refused — fail-closed, before any I/O.
+        let has_trusted_sig = artifact.signature.is_some() && artifact.signature_key.is_some();
+        if self.policy.require_signature && !has_trusted_sig {
+            return Err(VtaError::new(
+                Area::Vrf,
+                3,
+                format!(
+                    "signature required by policy but `{tool} {version}` is unsigned \
+                     or its signing key is not trusted"
+                ),
+            ));
+        }
+
+        // [3 Plan] — if the lock already named a key and it is present, reuse it
+        // ONLY if it still verifies (audit H4): a store hit must not be trusted
+        // blindly, since the entry could have been poisoned (audit H3) or the
+        // lockfile's `store_key` is attacker-influenceable. On mismatch, drop the
+        // bad entry and fall through to a fresh fetch + verify.
         if let Some(key) = &artifact.store_key {
             if self.store.has(key) {
-                self.link_bins(key, &artifact.bin)?;
-                self.record(tool, version, key, &artifact.checksum.value)?;
-                return Ok(key.clone());
+                if self.store.verify_entry(key)? {
+                    self.link_bins(key, &artifact.bin)?;
+                    self.record(tool, version, key, &artifact.checksum.value)?;
+                    return Ok(key.clone());
+                }
+                self.store.remove_entry(key)?;
             }
         }
 
-        // [4 Fetch]
+        // [4 Fetch] — cap downloaded bytes at the declared size when known (M8).
         let dl = self
             .store
             .downloads_dir()
             .join(format!("incoming-{tool}-{}", std::process::id()));
         let mut urls = vec![artifact.url.clone()];
         urls.extend(artifact.mirrors.clone());
-        self.downloader.download_any(&urls, &dl)?;
+        self.downloader.download_any(&urls, &dl, artifact.size)?;
 
         // [5 Verify] — fail closed (centralized in vanta-security).
         if let Err(e) =
@@ -81,7 +130,9 @@ impl Engine {
             let _ = fs::remove_file(&dl);
             return Err(e);
         }
-        // Signature verification when the registry pinned a signature + trusted key.
+        // Signature verification when the registry pinned a signature + trusted
+        // key. The key's trust is established upstream (audit C1, in the resolver);
+        // by this point a present `signature_key` is one we trust.
         if let (Some(sig), Some(key_text)) = (&artifact.signature, &artifact.signature_key) {
             let key = vanta_security::parse_minisign_pubkey(key_text)?;
             let bytes = fs::read(&dl).map_err(|e| io(&dl, e))?;
@@ -98,7 +149,14 @@ impl Engine {
             .first()
             .map(|b| basename(b))
             .unwrap_or_else(|| tool.to_string());
-        extract(&artifact.archive, &dl, &staging, &name, artifact.strip)?;
+        extract(
+            &artifact.archive,
+            &dl,
+            &staging,
+            &name,
+            artifact.strip,
+            self.max_decompressed,
+        )?;
         let _ = fs::remove_file(&dl);
 
         // [6 Materialize, cont.] atomic publish into the store.
@@ -222,22 +280,36 @@ impl Engine {
             if key.is_empty() {
                 continue;
             }
+            // `StoreKey::new` enforces the fixed-width lowercase-hex shape (M7),
+            // so `staging.join(key)` below cannot traverse out of staging.
             let sk = StoreKey::new(key)?;
             let dst = self.store.entry_path(&sk);
-            let src = staging.join(key);
-            if !dst.exists() && src.is_dir() {
-                // Bundled entries are read-only; add write so the dir can be moved.
-                let _ = vanta_store::ensure_writable(&src);
-                fs::rename(&src, &dst).map_err(|e| io(&dst, e))?;
-                restored += 1;
+            if dst.exists() {
+                // Already present (and immutable + verified at insert); nothing
+                // to import for this key.
+                continue;
             }
-            if !self.store.verify_entry(&sk)? {
+            let src = staging.join(key);
+            if !src.is_dir() {
+                continue;
+            }
+            // Audit H3: verify the staged subtree hashes to its claimed key
+            // BEFORE publishing it into the canonical store. A bundle whose
+            // contents do not match the `blake3-<hash>` dir name is rejected and
+            // the store is left unchanged (the staging dir is removed below).
+            let actual = vanta_store::hash_tree(&src)?;
+            if actual != sk.as_str() {
+                let _ = fs::remove_dir_all(&staging);
                 return Err(VtaError::new(
                     Area::Vrf,
                     1,
-                    format!("restored entry {key} failed integrity verification"),
+                    format!("bundled entry {key} failed integrity verification (content mismatch)"),
                 ));
             }
+            // Bundled entries are read-only; add write so the dir can be moved.
+            let _ = vanta_store::ensure_writable(&src);
+            fs::rename(&src, &dst).map_err(|e| io(&dst, e))?;
+            restored += 1;
         }
         let _ = fs::remove_dir_all(&staging);
         Ok(restored)
@@ -283,15 +355,17 @@ fn inst(msg: String) -> VtaError {
 
 /// Materialize an artifact's bytes into `dest` according to its archive kind,
 /// stripping `strip` leading path components (the provider's layout).
+/// `max_decompressed` caps the total decompressed bytes (audit M8).
 pub fn extract(
     archive: &str,
     src: &Path,
     dest: &Path,
     raw_name: &str,
     strip: u32,
+    max_decompressed: u64,
 ) -> VtaResult<()> {
     match archive {
-        "tar.gz" | "tgz" => extract_targz(src, dest, strip),
+        "tar.gz" | "tgz" => extract_targz(src, dest, strip, max_decompressed),
         "raw" => {
             fs::create_dir_all(dest).map_err(|e| io(dest, e))?;
             let out = dest.join(raw_name);
@@ -307,18 +381,24 @@ pub fn extract(
     }
 }
 
-fn extract_targz(src: &Path, dest: &Path, strip: u32) -> VtaResult<()> {
-    use std::path::{Component, PathBuf};
+fn extract_targz(src: &Path, dest: &Path, strip: u32, max_decompressed: u64) -> VtaResult<()> {
+    use std::path::PathBuf;
     let file = fs::File::open(src).map_err(|e| io(src, e))?;
-    let gz = flate2::read::GzDecoder::new(file);
+    // M8: bound total decompressed bytes so a gzip bomb aborts rather than
+    // filling the disk.
+    let gz = LimitReader::new(flate2::read::GzDecoder::new(file), max_decompressed);
     let mut archive = tar::Archive::new(gz);
+    // We re-apply a sanitized mode after unpack (M5: strip setuid/setgid), so we
+    // do not need tar to preserve raw permission bits.
     archive.set_preserve_permissions(true);
+    let dest_canon = dest.canonicalize().map_err(|e| io(dest, e))?;
     let entries = archive
         .entries()
         .map_err(|e| VtaError::new(Area::Inst, 1, format!("reading archive: {e}")))?;
     for entry in entries {
         let mut entry = entry
             .map_err(|e| VtaError::new(Area::Inst, 1, format!("reading archive entry: {e}")))?;
+        let entry_type = entry.header().entry_type();
         let path = entry
             .path()
             .map_err(|e| VtaError::new(Area::Inst, 1, format!("entry path: {e}")))?
@@ -328,28 +408,121 @@ fn extract_targz(src: &Path, dest: &Path, strip: u32) -> VtaResult<()> {
             continue;
         }
         // Reject anything that could escape the destination (zip-slip / traversal).
-        if stripped.components().any(|c| {
-            matches!(
-                c,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
-            return Err(VtaError::new(
-                Area::Inst,
-                1,
-                "archive entry escapes destination (path traversal rejected)".to_string(),
-            ));
+        if escapes(&stripped) {
+            return Err(traversal());
+        }
+        // M5: link entries (symlink/hardlink) get an extra check — their *target*
+        // must not be absolute or contain `..`. `entry.unpack` would otherwise
+        // create a link pointing outside the staging tree, which a later entry
+        // could write through.
+        if matches!(entry_type, tar::EntryType::Symlink | tar::EntryType::Link) {
+            let target = entry
+                .link_name()
+                .map_err(|e| VtaError::new(Area::Inst, 1, format!("link target: {e}")))?
+                .map(|c| c.into_owned())
+                .unwrap_or_default();
+            if target.is_absolute() || escapes(&target) {
+                return Err(VtaError::new(
+                    Area::Inst,
+                    1,
+                    format!(
+                        "archive link entry `{}` has an unsafe target `{}` (rejected)",
+                        stripped.display(),
+                        target.display()
+                    ),
+                ));
+            }
         }
         let out = dest.join(&stripped);
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+            // M5: after the parent exists, canonicalize it and confirm the
+            // realpath still lies under the staging root (defeats symlinked
+            // ancestors pointing elsewhere).
+            let parent_canon = parent.canonicalize().map_err(|e| io(parent, e))?;
+            if !parent_canon.starts_with(&dest_canon) {
+                return Err(traversal());
+            }
         }
         entry
             .unpack(&out)
             .map_err(|e| VtaError::new(Area::Inst, 1, format!("unpacking entry: {e}")))?;
+        // M5: strip setuid/setgid/sticky bits from materialized files.
+        strip_special_bits(&out);
     }
     Ok(())
 }
+
+/// Whether a relative path contains a component that would escape its base.
+fn escapes(p: &Path) -> bool {
+    use std::path::Component;
+    p.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
+}
+
+fn traversal() -> VtaError {
+    VtaError::new(
+        Area::Inst,
+        1,
+        "archive entry escapes destination (path traversal rejected)".to_string(),
+    )
+}
+
+/// A reader that errors once more than `limit` bytes have been read (audit M8).
+struct LimitReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R> LimitReader<R> {
+    fn new(inner: R, limit: u64) -> Self {
+        LimitReader {
+            inner,
+            remaining: limit,
+        }
+    }
+}
+
+impl<R: Read> Read for LimitReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let n64 = n as u64;
+        if n64 > self.remaining {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "decompressed size exceeds configured maximum (possible decompression bomb)",
+            ));
+        }
+        self.remaining -= n64;
+        Ok(n)
+    }
+}
+
+/// Strip setuid/setgid/sticky bits from a materialized path (audit M5).
+#[cfg(unix)]
+fn strip_special_bits(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    // Symlinks carry no meaningful permission bits; skip (and avoid following).
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return;
+        }
+        let mode = meta.permissions().mode();
+        let safe = mode & 0o777; // drop 0o7000 (setuid/setgid/sticky)
+        if safe != mode {
+            let mut perms = meta.permissions();
+            perms.set_mode(safe);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn strip_special_bits(_path: &Path) {}
 
 fn basename(p: &str) -> String {
     p.rsplit(['/', '\\']).next().unwrap_or(p).to_string()
@@ -417,7 +590,15 @@ mod tests {
         fs::write(&archive_path, &bytes).unwrap();
 
         let staging = store.new_staging().unwrap();
-        extract("tar.gz", &archive_path, &staging, "tool", 0).unwrap();
+        extract(
+            "tar.gz",
+            &archive_path,
+            &staging,
+            "tool",
+            0,
+            DEFAULT_MAX_DECOMPRESSED,
+        )
+        .unwrap();
         assert!(staging.join("bin/tool").exists());
 
         let key = store.publish_tree(&staging).unwrap();
@@ -428,7 +609,85 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_archive() {
-        let err = extract("tar.xz", Path::new("/x"), Path::new("/y"), "t", 0).unwrap_err();
+        let err = extract(
+            "tar.xz",
+            Path::new("/x"),
+            Path::new("/y"),
+            "t",
+            0,
+            DEFAULT_MAX_DECOMPRESSED,
+        )
+        .unwrap_err();
         assert_eq!(err.area, Area::Inst);
+    }
+
+    // M5: an archive containing a symlink whose target escapes the tree (here an
+    // absolute path), followed by a write through that link, must be rejected.
+    #[test]
+    fn rejects_symlink_escape_archive() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+        // A symlink `evil` -> `/tmp/escape-target` (absolute).
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        link.set_mode(0o777);
+        builder
+            .append_link(&mut link, "evil", "/tmp/vanta-escape-target")
+            .unwrap();
+        // A regular write through the link path.
+        let payload = b"pwned";
+        let mut f = tar::Header::new_gnu();
+        f.set_size(payload.len() as u64);
+        f.set_mode(0o644);
+        f.set_cksum();
+        builder.append_data(&mut f, "evil", &payload[..]).unwrap();
+        let bytes = builder.into_inner().unwrap().finish().unwrap();
+
+        let h = home("symlink");
+        let store = Store::open(&h).unwrap();
+        let archive_path = store.downloads_dir().join("evil.tar.gz");
+        fs::write(&archive_path, &bytes).unwrap();
+        let staging = store.new_staging().unwrap();
+        let err = extract(
+            "tar.gz",
+            &archive_path,
+            &staging,
+            "tool",
+            0,
+            DEFAULT_MAX_DECOMPRESSED,
+        )
+        .unwrap_err();
+        assert_eq!(err.area, Area::Inst);
+        assert!(!Path::new("/tmp/vanta-escape-target").exists());
+        let _ = fs::remove_dir_all(&h);
+    }
+
+    // M8: a highly compressible archive that decompresses past the cap aborts.
+    #[test]
+    fn rejects_decompression_bomb() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+        let big = vec![0u8; 1_000_000]; // 1 MB of zeros, compresses tiny
+        let mut header = tar::Header::new_gnu();
+        header.set_size(big.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, "big", &big[..]).unwrap();
+        let bytes = builder.into_inner().unwrap().finish().unwrap();
+
+        let h = home("bomb");
+        let store = Store::open(&h).unwrap();
+        let archive_path = store.downloads_dir().join("bomb.tar.gz");
+        fs::write(&archive_path, &bytes).unwrap();
+        let staging = store.new_staging().unwrap();
+        // Cap well below the 1 MB payload → extraction must fail.
+        let err = extract("tar.gz", &archive_path, &staging, "tool", 0, 4096).unwrap_err();
+        assert_eq!(err.area, Area::Inst);
+        let _ = fs::remove_dir_all(&h);
     }
 }
