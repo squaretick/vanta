@@ -8,7 +8,7 @@ repository.workspace = true
 description = "test harness, fakes (registry/provider/upstream), conformance utilities"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
 flate2 = { workspace = true }
 tar = { workspace = true }
 sha2 = { workspace = true }

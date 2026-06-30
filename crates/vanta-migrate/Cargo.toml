@@ -8,4 +8,4 @@ repository.workspace = true
 description = "importers: mise/asdf/nvm/pyenv/rbenv/volta/brew/scoop/pkgx"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }

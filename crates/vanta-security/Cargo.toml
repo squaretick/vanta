@@ -8,7 +8,7 @@ repository.workspace = true
 description = "checksums, signatures, trust db, SBOM, provenance, sandbox policy"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
 sha2 = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }

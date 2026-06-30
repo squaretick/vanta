@@ -8,5 +8,5 @@ repository.workspace = true
 description = "HTTP over rustls, parallel/resumable downloads, mirrors, retries, auth"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
 reqwest = { workspace = true, features = ["blocking"] }

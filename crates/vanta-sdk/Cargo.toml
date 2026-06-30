@@ -8,4 +8,4 @@ repository.workspace = true
 description = "provider-author SDK (guest side, for WASM providers)"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }

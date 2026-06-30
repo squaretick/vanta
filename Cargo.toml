@@ -15,24 +15,24 @@ homepage = "https://vanta.dev"
 # dependency-free so every other crate can depend on it freely.
 [workspace.dependencies]
 # intra-workspace (path) — convenience handles
-vanta-core = { path = "crates/vanta-core" }
-vanta-platform = { path = "crates/vanta-platform" }
-vanta-config = { path = "crates/vanta-config" }
-vanta-lock = { path = "crates/vanta-lock" }
-vanta-resolve = { path = "crates/vanta-resolve" }
-vanta-registry = { path = "crates/vanta-registry" }
-vanta-provider = { path = "crates/vanta-provider" }
-vanta-net = { path = "crates/vanta-net" }
-vanta-store = { path = "crates/vanta-store" }
-vanta-install = { path = "crates/vanta-install" }
-vanta-env = { path = "crates/vanta-env" }
-vanta-security = { path = "crates/vanta-security" }
-vanta-state = { path = "crates/vanta-state" }
-vanta-diag = { path = "crates/vanta-diag" }
-vanta-cli = { path = "crates/vanta-cli" }
-vanta-sdk = { path = "crates/vanta-sdk" }
-vanta-migrate = { path = "crates/vanta-migrate" }
-vanta-test = { path = "crates/vanta-test" }
+vanta-core = { path = "crates/vanta-core", version = "0.0.0" }
+vanta-platform = { path = "crates/vanta-platform", version = "0.0.0" }
+vanta-config = { path = "crates/vanta-config", version = "0.0.0" }
+vanta-lock = { path = "crates/vanta-lock", version = "0.0.0" }
+vanta-resolve = { path = "crates/vanta-resolve", version = "0.0.0" }
+vanta-registry = { path = "crates/vanta-registry", version = "0.0.0" }
+vanta-provider = { path = "crates/vanta-provider", version = "0.0.0" }
+vanta-net = { path = "crates/vanta-net", version = "0.0.0" }
+vanta-store = { path = "crates/vanta-store", version = "0.0.0" }
+vanta-install = { path = "crates/vanta-install", version = "0.0.0" }
+vanta-env = { path = "crates/vanta-env", version = "0.0.0" }
+vanta-security = { path = "crates/vanta-security", version = "0.0.0" }
+vanta-state = { path = "crates/vanta-state", version = "0.0.0" }
+vanta-diag = { path = "crates/vanta-diag", version = "0.0.0" }
+vanta-cli = { path = "crates/vanta-cli", version = "0.0.0" }
+vanta-sdk = { path = "crates/vanta-sdk", version = "0.0.0" }
+vanta-migrate = { path = "crates/vanta-migrate", version = "0.0.0" }
+vanta-test = { path = "crates/vanta-test", version = "0.0.0" }
 
 # external (intended; see docs/03 §shared-dependencies) — not yet wired in the scaffold
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "io-util"] }

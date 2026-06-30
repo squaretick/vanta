@@ -8,5 +8,5 @@ repository.workspace = true
 description = "content-addressed store, atomic publish, links, dedup, integrity, GC"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
 blake3 = { workspace = true }

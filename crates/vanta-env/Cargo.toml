@@ -8,5 +8,5 @@ repository.workspace = true
 description = "environment composition, activation, shell-hook generation"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
-vanta-store = { path = "../vanta-store" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
+vanta-store = { path = "../vanta-store", version = "0.0.0" }

@@ -8,6 +8,6 @@ repository.workspace = true
 description = "doctor checks, diagnostics rendering, error-code registry"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
-vanta-store = { path = "../vanta-store" }
-vanta-state = { path = "../vanta-state" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
+vanta-store = { path = "../vanta-store", version = "0.0.0" }
+vanta-state = { path = "../vanta-state", version = "0.0.0" }

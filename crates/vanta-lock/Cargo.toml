@@ -8,7 +8,7 @@ repository.workspace = true
 description = "vanta.lock model, manifest<->lock reconcile, canonical serialization"
 
 [dependencies]
-vanta-core = { path = "../vanta-core" }
+vanta-core = { path = "../vanta-core", version = "0.0.0" }
 serde = { workspace = true }
 toml = { workspace = true }
 
