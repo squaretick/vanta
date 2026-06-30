@@ -32,15 +32,17 @@ use std::path::Path;
 /// entry — the same shape minisign writes, including the `untrusted comment:`
 /// line).
 ///
-/// **PLACEHOLDER — maintainers MUST replace this with the real Vanta release
-/// root key(s) before distributing signed registries.** It is intentionally
-/// empty so a fresh build trusts *nothing* it did not fetch verifiably: with no
-/// compiled-in root and no user-supplied root, a network registry cannot be
-/// verified and is refused (unless the operator explicitly opts into insecure
-/// mode). See the "Remediation notes" section of `SECURITY-AUDIT.md`.
+/// The pinned Vanta release registry root key(s). A fetched network index must
+/// carry a detached signature that verifies against one of these before its
+/// entries are trusted. The matching secret is held offline by the registry
+/// maintainer (see `registry/README.md`); it is never stored in the repository.
+///
+/// To rotate, append the new public key here (keep the old one until every
+/// published index is re-signed), rebuild, then regenerate + re-sign the
+/// registry with `cargo xtask registry-gen`.
 pub const COMPILED_IN_ROOT_KEYS: &[&str] = &[
-    // Example of the expected format (do NOT trust this placeholder key):
-    // "untrusted comment: vanta registry root (PLACEHOLDER — replace me)\nRWQf6...",
+    // Vanta official registry root (minisign Ed25519).
+    "untrusted comment: vanta registry root key\nRWTKdzWEeVXHgj5NxXCdfaJwJYJ5rdpNJ+MJ4IINh2RlSVBgOOt7QbKL",
 ];
 
 /// The on-disk shape of `<trust_dir>/roots.toml`.

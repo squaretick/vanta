@@ -102,7 +102,7 @@ pub fn run(args: &[String]) -> VtaResult<ExitCode> {
             print_help();
             Ok(ExitCode::Ok)
         }
-        "add" => cmd_add(rest),
+        "add" | "install" => cmd_add(rest),
         "search" => cmd_search(rest),
         "info" => cmd_info(rest),
         "activate" => cmd_activate(rest),
@@ -1126,6 +1126,13 @@ fn home() -> VtaResult<PathBuf> {
 /// index served by a hostile endpoint).
 const REGISTRY_MAX_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
 
+/// The official, root-signed registry served from the project repository. Used
+/// when `$VANTA_REGISTRY` is unset; fetched and verified over the same
+/// pinned-root path as any other network registry (audit C1). Override with
+/// `$VANTA_REGISTRY` (an `https://` URL or a local file path).
+const DEFAULT_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/squaretick/vanta/main/registry/registry.toml";
+
 /// Whether the operator has explicitly opted into insecure registry handling
 /// (`VANTA_INSECURE_REGISTRY=1`). DANGEROUS: this disables both the HTTPS
 /// requirement and the pinned-root signature requirement on a network registry,
@@ -1148,86 +1155,14 @@ fn registry_insecure_optin() -> bool {
 ///   documented, dangerous `VANTA_INSECURE_REGISTRY` opt-in.
 /// * A local-file index (`$VANTA_REGISTRY=/path`) is user-owned and treated as
 ///   trusted.
-/// * With no `$VANTA_REGISTRY`, the (empty) built-in index is used.
+/// * With no `$VANTA_REGISTRY`, the official [`DEFAULT_REGISTRY_URL`] is fetched
+///   and verified over the same pinned-root path; only if it cannot be
+///   reached/verified do we fall back to the empty built-in index.
 fn load_registry() -> VtaResult<Registry> {
     let roots = vanta_security::trust::load_root_keys(&home()?.join("trust"));
     match std::env::var("VANTA_REGISTRY") {
         Ok(loc) if loc.starts_with("http://") || loc.starts_with("https://") => {
-            let insecure = registry_insecure_optin();
-            if loc.starts_with("http://") && !insecure {
-                return Err(VtaError::new(
-                    Area::Reg,
-                    5,
-                    format!(
-                        "refusing plaintext http registry {loc} (https required; \
-                         set VANTA_INSECURE_REGISTRY=1 to override — DANGEROUS)"
-                    ),
-                ));
-            }
-            let downloader = if insecure {
-                vanta_net::Downloader::insecure()?
-            } else {
-                vanta_net::Downloader::new()?
-            };
-            let pid = std::process::id();
-            let tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.toml"));
-            // The index length is not declared up front, so this renders as a
-            // byte-counting spinner rather than a determinate bar.
-            let progress = Progress::new_bar("fetching registry index", None);
-            let dl = downloader.download_capped_with_progress(
-                &loc,
-                &tmp,
-                Some(REGISTRY_MAX_BYTES),
-                Some(&|n| progress.inc(n)),
-            );
-            if let Err(e) = dl {
-                progress.finish_err("registry index download failed");
-                return Err(e);
-            }
-            progress.finish_ok("fetched registry index");
-            let index_bytes = std::fs::read(&tmp)
-                .map_err(|e| VtaError::new(Area::Reg, 1, format!("reading index: {e}")))?;
-
-            // Authenticate the index against a pinned root before trusting it.
-            let sig_url = format!("{loc}.minisig");
-            let sig_tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.minisig"));
-            let signature = downloader
-                .download_capped(&sig_url, &sig_tmp, Some(1024 * 1024))
-                .ok()
-                .and_then(|_| std::fs::read_to_string(&sig_tmp).ok());
-            let _ = std::fs::remove_file(&sig_tmp);
-            let index_verified = signature
-                .as_deref()
-                .map(|s| vanta_security::trust::index_signed_by_root(&index_bytes, s, &roots))
-                .unwrap_or(false);
-
-            if !index_verified && !insecure {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(VtaError::new(
-                    Area::Reg,
-                    6,
-                    format!(
-                        "registry index {loc} is not signed by a pinned trust root \
-                         (expected detached signature at {loc}.minisig). Refusing to trust it. \
-                         Add a root to ~/.vanta/trust/roots.toml, or set \
-                         VANTA_INSECURE_REGISTRY=1 to override — DANGEROUS."
-                    ),
-                ));
-            }
-            if insecure && !index_verified {
-                eprintln!(
-                    "vanta: WARNING — using unverified registry {loc} (VANTA_INSECURE_REGISTRY). \
-                     Per-artifact signing keys will be treated as untrusted."
-                );
-            }
-
-            let src = String::from_utf8(index_bytes)
-                .map_err(|e| VtaError::new(Area::Reg, 2, format!("index is not UTF-8: {e}")))?;
-            let _ = std::fs::remove_file(&tmp);
-            let mut registry = Registry::from_toml(&src)?;
-            registry.index_verified = index_verified;
-            registry.trusted_root_keys = roots;
-            Ok(registry)
+            fetch_signed_index(&loc, roots)
         }
         Ok(path) => {
             // A local, user-owned index is trusted (the operator chose it).
@@ -1236,8 +1171,106 @@ fn load_registry() -> VtaResult<Registry> {
             registry.trusted_root_keys = roots;
             Ok(registry)
         }
-        Err(_) => Ok(Registry::builtin()),
+        Err(_) => {
+            // No override: use the official, root-signed registry over the same
+            // verified-network path. If it cannot be reached/verified, fall back
+            // to the (empty) built-in index with an actionable error so offline
+            // use still works rather than hard-failing every command.
+            match fetch_signed_index(DEFAULT_REGISTRY_URL, roots) {
+                Ok(registry) => Ok(registry),
+                Err(e) => {
+                    eprintln!(
+                        "vanta: WARNING — could not load the official registry \
+                         ({DEFAULT_REGISTRY_URL}): {e}. Falling back to the empty \
+                         built-in index. Set $VANTA_REGISTRY to a reachable signed \
+                         https URL or a local file path to override."
+                    );
+                    Ok(Registry::builtin())
+                }
+            }
+        }
     }
+}
+
+/// Fetch a network registry index and authenticate it against the pinned trust
+/// roots before returning it (audit C1). Shared by the explicit
+/// `$VANTA_REGISTRY=https://…` path and the built-in [`DEFAULT_REGISTRY_URL`].
+fn fetch_signed_index(loc: &str, roots: Vec<String>) -> VtaResult<Registry> {
+    let insecure = registry_insecure_optin();
+    if loc.starts_with("http://") && !insecure {
+        return Err(VtaError::new(
+            Area::Reg,
+            5,
+            format!(
+                "refusing plaintext http registry {loc} (https required; \
+                 set VANTA_INSECURE_REGISTRY=1 to override — DANGEROUS)"
+            ),
+        ));
+    }
+    let downloader = if insecure {
+        vanta_net::Downloader::insecure()?
+    } else {
+        vanta_net::Downloader::new()?
+    };
+    let pid = std::process::id();
+    let tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.toml"));
+    // The index length is not declared up front, so this renders as a
+    // byte-counting spinner rather than a determinate bar.
+    let progress = Progress::new_bar("fetching registry index", None);
+    let dl = downloader.download_capped_with_progress(
+        loc,
+        &tmp,
+        Some(REGISTRY_MAX_BYTES),
+        Some(&|n| progress.inc(n)),
+    );
+    if let Err(e) = dl {
+        progress.finish_err("registry index download failed");
+        return Err(e);
+    }
+    progress.finish_ok("fetched registry index");
+    let index_bytes = std::fs::read(&tmp)
+        .map_err(|e| VtaError::new(Area::Reg, 1, format!("reading index: {e}")))?;
+
+    // Authenticate the index against a pinned root before trusting it.
+    let sig_url = format!("{loc}.minisig");
+    let sig_tmp = std::env::temp_dir().join(format!("vanta-registry-{pid}.minisig"));
+    let signature = downloader
+        .download_capped(&sig_url, &sig_tmp, Some(1024 * 1024))
+        .ok()
+        .and_then(|_| std::fs::read_to_string(&sig_tmp).ok());
+    let _ = std::fs::remove_file(&sig_tmp);
+    let index_verified = signature
+        .as_deref()
+        .map(|s| vanta_security::trust::index_signed_by_root(&index_bytes, s, &roots))
+        .unwrap_or(false);
+
+    if !index_verified && !insecure {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(VtaError::new(
+            Area::Reg,
+            6,
+            format!(
+                "registry index {loc} is not signed by a pinned trust root \
+                 (expected detached signature at {loc}.minisig). Refusing to trust it. \
+                 Add a root to ~/.vanta/trust/roots.toml, or set \
+                 VANTA_INSECURE_REGISTRY=1 to override — DANGEROUS."
+            ),
+        ));
+    }
+    if insecure && !index_verified {
+        eprintln!(
+            "vanta: WARNING — using unverified registry {loc} (VANTA_INSECURE_REGISTRY). \
+             Per-artifact signing keys will be treated as untrusted."
+        );
+    }
+
+    let src = String::from_utf8(index_bytes)
+        .map_err(|e| VtaError::new(Area::Reg, 2, format!("index is not UTF-8: {e}")))?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut registry = Registry::from_toml(&src)?;
+    registry.index_verified = index_verified;
+    registry.trusted_root_keys = roots;
+    Ok(registry)
 }
 
 /// Build the install [`Policy`] from configuration (audit H2). Reads
@@ -1283,13 +1316,19 @@ fn print_help() {
          USAGE:\n    vanta <command> [args]\n\
          \n\
          COMMON COMMANDS:\n\
-         \x20   add <tool>[@ver]    resolve and install a tool\n\
+         \x20   add <tool>[@ver]    resolve and install a tool (alias: install)\n\
          \x20   search <query>      search the registry\n\
          \x20   info <tool>         show a tool's versions\n\
          \x20   remove <tool>       remove a tool\n\
          \x20   update [tool]       update within constraints\n\
          \x20   sync                reconcile to vanta.toml + vanta.lock\n\
          \x20   doctor              diagnose the installation\n\
+         \n\
+         REGISTRY:\n\
+         \x20   By default vanta uses the official, minisign-signed registry\n\
+         \x20   (verified against a pinned root key). Override the source with\n\
+         \x20   $VANTA_REGISTRY — an https:// URL (must carry a <url>.minisig\n\
+         \x20   signed by a pinned root) or a local file path (trusted as-is).\n\
          \n\
          See docs/04-cli.md for the full reference."
     );
@@ -1314,15 +1353,25 @@ mod tests {
         assert_eq!(run(&["add".into()]).unwrap(), ExitCode::Usage);
     }
 
+    /// Point `$VANTA_REGISTRY` at a local empty index so `load_registry` stays
+    /// hermetic (no network fetch of the official default) during unit tests.
+    fn use_empty_registry() {
+        let p = std::env::temp_dir().join(format!("vanta-empty-reg-{}.toml", std::process::id()));
+        std::fs::write(&p, "").unwrap();
+        std::env::set_var("VANTA_REGISTRY", &p);
+    }
+
     #[test]
     fn add_unknown_tool_resolves_to_error() {
         // Resolution fails for an unknown tool before any disk/network side effect.
+        use_empty_registry();
         let err = run(&["add".into(), "totally-unknown-tool".into()]).unwrap_err();
         assert_eq!(err.area, Area::Res);
     }
 
     #[test]
     fn search_succeeds() {
+        use_empty_registry();
         assert_eq!(
             run(&["search".into(), "node".into()]).unwrap(),
             ExitCode::Ok

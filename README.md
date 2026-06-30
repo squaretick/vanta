@@ -152,11 +152,50 @@ test = "pnpm test"
 [05. Configuration](docs/05-configuration.md) and
 [27. Configuration Reference](docs/27-config-reference.md).
 
+## Registry
+
+Out of the box, `vanta` resolves tools against the **official, minisign-signed
+registry** in [`registry/registry.toml`](registry/registry.toml). On every run the
+CLI fetches the index and its detached signature, verifies the signature against a
+**pinned root key compiled into the binary**, and only then trusts any entry — then
+each artifact is gated by its published SHA-256. This is the trust anchor described
+in [15. Security](docs/15-security.md) (no entry, checksum, or signing key from the
+index is trusted until the index itself is root-verified).
+
+The seed set ships real, current-stable releases across Linux (x86_64/aarch64) and
+macOS (x86_64/aarch64):
+
+| Tool | Versions |
+| --- | --- |
+| `node` | 22.11.0, 20.18.0 |
+| `go` | 1.23.4, 1.22.10 |
+| `python` (python-build-standalone) | 3.12.7, 3.11.10 |
+| `ripgrep` | 14.1.1 |
+| `fd` | 10.2.0 |
+| `jq` | 1.7.1 |
+| `uv` | 0.5.11 |
+
+```sh
+vanta add ripgrep@14.1.1     # resolve + verify + install from the official registry
+vanta install jq@1.7.1       # `install` is an alias for `add`
+```
+
+**Override the registry source** with `$VANTA_REGISTRY`:
+
+- an `https://` URL — must carry a `<url>.minisig` signed by a pinned root
+  (add your own root to `~/.vanta/trust/roots.toml`), or
+- a **local file path** — user-owned and trusted as-is (handy for development and
+  air-gapped mirrors).
+
+Maintainers regenerate and re-sign the registry with
+`cargo xtask registry-gen`; see [registry/README.md](registry/README.md) for the
+schema, the per-artifact-signature policy, and root-key handling.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `vanta add <tool>[@ver] …` | Resolve and install tools into the current scope |
+| `vanta add <tool>[@ver] …` (alias `install`) | Resolve and install tools into the current scope |
 | `vanta remove <tool>` | Remove a tool |
 | `vanta update [tool]` | Update within the manifest's version constraints |
 | `vanta sync` | Reconcile to `vanta.toml` + `vanta.lock` (reproduce a project) |

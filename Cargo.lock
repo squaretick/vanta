@@ -3272,6 +3272,15 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.0.1"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "serde_json",
+ "sha2",
+ "vanta-core",
+ "vanta-net",
+ "vanta-provider",
+]
 
 [[package]]
 name = "yoke"
