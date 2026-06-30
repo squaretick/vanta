@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "test harness, fakes (registry/provider/upstream), conformance utilities"
+# Internal test-only helper, consumed solely as a dev-dependency. Not published.
+publish = false
 
 [dependencies]
 vanta-core.workspace = true

@@ -282,7 +282,6 @@ Vanta is a Cargo workspace of focused crates (full catalog in
 | [`vanta-shim`](https://crates.io/crates/vanta-shim) | ![v](https://img.shields.io/crates/v/vanta-shim.svg) | ![d](https://img.shields.io/crates/d/vanta-shim.svg) | [![docs](https://img.shields.io/docsrs/vanta-shim)](https://docs.rs/vanta-shim) |
 | [`vanta-state`](https://crates.io/crates/vanta-state) | ![v](https://img.shields.io/crates/v/vanta-state.svg) | ![d](https://img.shields.io/crates/d/vanta-state.svg) | [![docs](https://img.shields.io/docsrs/vanta-state)](https://docs.rs/vanta-state) |
 | [`vanta-store`](https://crates.io/crates/vanta-store) | ![v](https://img.shields.io/crates/v/vanta-store.svg) | ![d](https://img.shields.io/crates/d/vanta-store.svg) | [![docs](https://img.shields.io/docsrs/vanta-store)](https://docs.rs/vanta-store) |
-| [`vanta-test`](https://crates.io/crates/vanta-test) | ![v](https://img.shields.io/crates/v/vanta-test.svg) | ![d](https://img.shields.io/crates/d/vanta-test.svg) | [![docs](https://img.shields.io/docsrs/vanta-test)](https://docs.rs/vanta-test) |
 | [`vanta-ui`](https://crates.io/crates/vanta-ui) | ![v](https://img.shields.io/crates/v/vanta-ui.svg) | ![d](https://img.shields.io/crates/d/vanta-ui.svg) | [![docs](https://img.shields.io/docsrs/vanta-ui)](https://docs.rs/vanta-ui) |
 
 ## Building and testing

@@ -11,6 +11,11 @@ git_tag_enable = false
 git_release_enable = false
 
 [[package]]
+name = "vanta-test"
+# Internal dev-only test harness (publish = false). Skip it entirely.
+release = false
+
+[[package]]
 name = "vanta"
 # The binary crate is the one release: tag `v{version}` + a GitHub Release.
 git_tag_enable = true
