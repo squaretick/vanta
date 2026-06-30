@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "vanta"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-cli",
  "vanta-core",
@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-cli"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-config",
  "vanta-core",
@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-config"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "proptest",
  "serde",
@@ -2342,14 +2342,14 @@ dependencies = [
 
 [[package]]
 name = "vanta-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "vanta-diag"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-core",
  "vanta-state",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-env"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-core",
  "vanta-store",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-install"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "flate2",
  "tar",
@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-lock"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "proptest",
  "serde",
@@ -2390,14 +2390,14 @@ dependencies = [
 
 [[package]]
 name = "vanta-migrate"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-core",
 ]
 
 [[package]]
 name = "vanta-net"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "reqwest",
  "vanta-core",
@@ -2406,14 +2406,14 @@ dependencies = [
 
 [[package]]
 name = "vanta-platform"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-core",
 ]
 
 [[package]]
 name = "vanta-provider"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "vanta-core",
@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-registry"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "toml 0.8.23",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-resolve"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "semver",
  "vanta-core",
@@ -2444,14 +2444,14 @@ dependencies = [
 
 [[package]]
 name = "vanta-sdk"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-core",
 ]
 
 [[package]]
 name = "vanta-security"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64",
  "blake2",
@@ -2465,7 +2465,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-shim"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "vanta-core",
  "vanta-platform",
@@ -2474,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-state"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "redb",
  "serde",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-store"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "vanta-core",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-test"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -2504,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-ui"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "indicatif",
  "owo-colors",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64",
  "ed25519-dalek",
