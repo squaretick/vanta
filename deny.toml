@@ -21,6 +21,9 @@ allow = [
     # webpki-roots ships Mozilla's CA bundle (data, not code) under the Community
     # Data License Agreement; pulled in transitively by the rustls TLS stack.
     "CDLA-Permissive-2.0",
+    # im-rc (and its bitmaps/sized-chunks deps) are MPL-2.0; pulled in transitively
+    # by cranelift inside the wasmtime provider sandbox. Weak file-level copyleft.
+    "MPL-2.0",
 ]
 confidence-threshold = 0.9
 
