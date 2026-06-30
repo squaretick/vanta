@@ -1,0 +1,19 @@
+# release-plz configuration.
+#
+# Intent (see RELEASING.md): every workspace crate publishes to crates.io, but
+# only the `vanta` binary crate is tagged `v{version}` and gets a GitHub Release.
+# Library crates publish without their own tag/release, so the repo's "Latest"
+# release and `release-binaries.yml` (triggered on `v*`) track the binary only.
+
+[workspace]
+# Library crates: publish to crates.io, but no per-crate git tag or GitHub release.
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "vanta"
+# The binary crate is the one release: tag `v{version}` + a GitHub Release.
+git_tag_enable = true
+git_release_enable = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"

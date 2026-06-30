@@ -1,7 +1,11 @@
+<p align="center">
+  <a href="https://crates.io/crates/vanta"><img src="assets/banner.svg" alt="Vanta — every developer tool, one command" width="820"></a>
+</p>
+
 # Vanta
 
 [![crates.io](https://img.shields.io/crates/v/vanta.svg)](https://crates.io/crates/vanta)
-[![release](https://img.shields.io/github/v/release/squaretick/vanta?sort=semver)](https://github.com/squaretick/vanta/releases/latest)
+[![release](https://img.shields.io/github/v/release/squaretick/vanta?filter=!vanta-*&sort=semver)](https://github.com/squaretick/vanta/releases/latest)
 [![crates.io downloads](https://img.shields.io/crates/d/vanta.svg)](https://crates.io/crates/vanta)
 [![release downloads](https://img.shields.io/github/downloads/squaretick/vanta/total.svg)](https://github.com/squaretick/vanta/releases)
 [![docs.rs](https://img.shields.io/docsrs/vanta-core)](https://docs.rs/vanta-core)
@@ -259,7 +263,7 @@ Vanta is a Cargo workspace of focused crates (full catalog in
 
 | Crate | Version | Downloads | Docs |
 | --- | --- | --- | --- |
-| [`vanta`](https://crates.io/crates/vanta) | ![v](https://img.shields.io/crates/v/vanta.svg) | ![d](https://img.shields.io/crates/d/vanta.svg) | [![docs](https://img.shields.io/docsrs/vanta)](https://docs.rs/vanta) |
+| [`vanta`](https://crates.io/crates/vanta) | ![v](https://img.shields.io/crates/v/vanta.svg) | ![d](https://img.shields.io/crates/d/vanta.svg) | [![binary](https://img.shields.io/badge/docs-binary%20crate-8b5cf6)](crates/vanta/src/main.rs) |
 | [`vanta-cli`](https://crates.io/crates/vanta-cli) | ![v](https://img.shields.io/crates/v/vanta-cli.svg) | ![d](https://img.shields.io/crates/d/vanta-cli.svg) | [![docs](https://img.shields.io/docsrs/vanta-cli)](https://docs.rs/vanta-cli) |
 | [`vanta-config`](https://crates.io/crates/vanta-config) | ![v](https://img.shields.io/crates/v/vanta-config.svg) | ![d](https://img.shields.io/crates/d/vanta-config.svg) | [![docs](https://img.shields.io/docsrs/vanta-config)](https://docs.rs/vanta-config) |
 | [`vanta-core`](https://crates.io/crates/vanta-core) | ![v](https://img.shields.io/crates/v/vanta-core.svg) | ![d](https://img.shields.io/crates/d/vanta-core.svg) | [![docs](https://img.shields.io/docsrs/vanta-core)](https://docs.rs/vanta-core) |
@@ -275,7 +279,7 @@ Vanta is a Cargo workspace of focused crates (full catalog in
 | [`vanta-resolve`](https://crates.io/crates/vanta-resolve) | ![v](https://img.shields.io/crates/v/vanta-resolve.svg) | ![d](https://img.shields.io/crates/d/vanta-resolve.svg) | [![docs](https://img.shields.io/docsrs/vanta-resolve)](https://docs.rs/vanta-resolve) |
 | [`vanta-sdk`](https://crates.io/crates/vanta-sdk) | ![v](https://img.shields.io/crates/v/vanta-sdk.svg) | ![d](https://img.shields.io/crates/d/vanta-sdk.svg) | [![docs](https://img.shields.io/docsrs/vanta-sdk)](https://docs.rs/vanta-sdk) |
 | [`vanta-security`](https://crates.io/crates/vanta-security) | ![v](https://img.shields.io/crates/v/vanta-security.svg) | ![d](https://img.shields.io/crates/d/vanta-security.svg) | [![docs](https://img.shields.io/docsrs/vanta-security)](https://docs.rs/vanta-security) |
-| [`vanta-shim`](https://crates.io/crates/vanta-shim) | ![v](https://img.shields.io/crates/v/vanta-shim.svg) | ![d](https://img.shields.io/crates/d/vanta-shim.svg) | [![docs](https://img.shields.io/docsrs/vanta-shim)](https://docs.rs/vanta-shim) |
+| [`vanta-shim`](https://crates.io/crates/vanta-shim) | ![v](https://img.shields.io/crates/v/vanta-shim.svg) | ![d](https://img.shields.io/crates/d/vanta-shim.svg) | [![binary](https://img.shields.io/badge/docs-binary%20crate-8b5cf6)](crates/vanta-shim/src/main.rs) |
 | [`vanta-state`](https://crates.io/crates/vanta-state) | ![v](https://img.shields.io/crates/v/vanta-state.svg) | ![d](https://img.shields.io/crates/d/vanta-state.svg) | [![docs](https://img.shields.io/docsrs/vanta-state)](https://docs.rs/vanta-state) |
 | [`vanta-store`](https://crates.io/crates/vanta-store) | ![v](https://img.shields.io/crates/v/vanta-store.svg) | ![d](https://img.shields.io/crates/d/vanta-store.svg) | [![docs](https://img.shields.io/docsrs/vanta-store)](https://docs.rs/vanta-store) |
 | [`vanta-test`](https://crates.io/crates/vanta-test) | ![v](https://img.shields.io/crates/v/vanta-test.svg) | ![d](https://img.shields.io/crates/d/vanta-test.svg) | [![docs](https://img.shields.io/docsrs/vanta-test)](https://docs.rs/vanta-test) |
