@@ -10,14 +10,14 @@ description = "Vanta command implementations (the library behind the `vanta` bin
 # `clap` and the remaining orchestration crates (vanta-env/diag) are wired in as
 # the commands are implemented (Phase 4, docs/19-milestones.md).
 [dependencies]
-vanta-core = { path = "../vanta-core", version = "0.0.0" }
-vanta-registry = { path = "../vanta-registry", version = "0.0.0" }
-vanta-resolve = { path = "../vanta-resolve", version = "0.0.0" }
-vanta-install = { path = "../vanta-install", version = "0.0.0" }
-vanta-env = { path = "../vanta-env", version = "0.0.0" }
-vanta-net = { path = "../vanta-net", version = "0.0.0" }
-vanta-config = { path = "../vanta-config", version = "0.0.0" }
-vanta-lock = { path = "../vanta-lock", version = "0.0.0" }
-vanta-diag = { path = "../vanta-diag", version = "0.0.0" }
-vanta-migrate = { path = "../vanta-migrate", version = "0.0.0" }
-vanta-security = { path = "../vanta-security", version = "0.0.0" }
+vanta-core.workspace = true
+vanta-registry.workspace = true
+vanta-resolve.workspace = true
+vanta-install.workspace = true
+vanta-env.workspace = true
+vanta-net.workspace = true
+vanta-config.workspace = true
+vanta-lock.workspace = true
+vanta-diag.workspace = true
+vanta-migrate.workspace = true
+vanta-security.workspace = true

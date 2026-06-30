@@ -8,7 +8,7 @@ repository.workspace = true
 description = "request to resolution, version ordering, constraints, dependency DAG"
 
 [dependencies]
-vanta-core = { path = "../vanta-core", version = "0.0.0" }
-vanta-registry = { path = "../vanta-registry", version = "0.0.0" }
-vanta-provider = { path = "../vanta-provider", version = "0.0.0" }
+vanta-core.workspace = true
+vanta-registry.workspace = true
+vanta-provider.workspace = true
 semver = { workspace = true }

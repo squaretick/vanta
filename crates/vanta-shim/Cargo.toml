@@ -15,6 +15,6 @@ name = "vanta-shim"
 path = "src/main.rs"
 
 [dependencies]
-vanta-core = { path = "../vanta-core", version = "0.0.0" }
-vanta-platform = { path = "../vanta-platform", version = "0.0.0" }
-vanta-state = { path = "../vanta-state", version = "0.0.0" }
+vanta-core.workspace = true
+vanta-platform.workspace = true
+vanta-state.workspace = true

@@ -8,4 +8,4 @@ repository.workspace = true
 description = "OS/arch/libc detection, paths, link strategies, shells, executable handling"
 
 [dependencies]
-vanta-core = { path = "../vanta-core", version = "0.0.0" }
+vanta-core.workspace = true

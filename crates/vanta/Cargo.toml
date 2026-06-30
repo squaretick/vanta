@@ -18,8 +18,8 @@ name = "vt"
 path = "src/bin/vt.rs"
 
 [dependencies]
-vanta-core = { path = "../vanta-core", version = "0.0.0" }
-vanta-cli = { path = "../vanta-cli", version = "0.0.0" }
+vanta-core.workspace = true
+vanta-cli.workspace = true
 
 # Packaging metadata for `cargo deb` and `cargo generate-rpm` (release.yml).
 # Ships the `vanta`, `vt`, and `vanta-shim` binaries.
