@@ -2325,6 +2325,7 @@ dependencies = [
  "vanta-security",
  "vanta-state",
  "vanta-store",
+ "vanta-test",
 ]
 
 [[package]]
