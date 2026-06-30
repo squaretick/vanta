@@ -1,6 +1,9 @@
 # Vanta
 
 [![crates.io](https://img.shields.io/crates/v/vanta.svg)](https://crates.io/crates/vanta)
+[![release](https://img.shields.io/github/v/release/squaretick/vanta?sort=semver)](https://github.com/squaretick/vanta/releases/latest)
+[![crates.io downloads](https://img.shields.io/crates/d/vanta.svg)](https://crates.io/crates/vanta)
+[![release downloads](https://img.shields.io/github/downloads/squaretick/vanta/total.svg)](https://github.com/squaretick/vanta/releases)
 [![docs.rs](https://img.shields.io/docsrs/vanta-core)](https://docs.rs/vanta-core)
 [![CI](https://github.com/squaretick/vanta/actions/workflows/ci.yml/badge.svg)](https://github.com/squaretick/vanta/actions/workflows/ci.yml)
 [![MSRV](https://img.shields.io/badge/rustc-1.83%2B-orange.svg)](https://www.rust-lang.org)
@@ -83,8 +86,20 @@ Then enable automatic, per-directory version switching by adding the shell hook 
 your shell's startup file:
 
 ```sh
-echo 'eval "$(vanta activate zsh)"' >> ~/.zshrc    # or: bash, fish, pwsh
+# bash
+echo 'eval "$(vanta activate bash)"' >> ~/.bashrc
+
+# zsh
+echo 'eval "$(vanta activate zsh)"' >> ~/.zshrc
+
+# fish
+echo 'vanta activate fish | source' >> ~/.config/fish/config.fish
+
+# PowerShell (Windows / pwsh)
+Add-Content $PROFILE 'Invoke-Expression (& vanta activate pwsh | Out-String)'
 ```
+
+Restart your shell (or `source` the file) to pick up the hook.
 
 ## Quick start
 
