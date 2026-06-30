@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 rust-version = "1.83"
 license = "Apache-2.0"
@@ -15,24 +15,24 @@ homepage = "https://vanta.dev"
 # dependency-free so every other crate can depend on it freely.
 [workspace.dependencies]
 # intra-workspace (path) — convenience handles
-vanta-core = { path = "crates/vanta-core", version = "0.0.1" }
-vanta-platform = { path = "crates/vanta-platform", version = "0.0.1" }
-vanta-config = { path = "crates/vanta-config", version = "0.0.1" }
-vanta-lock = { path = "crates/vanta-lock", version = "0.0.1" }
-vanta-resolve = { path = "crates/vanta-resolve", version = "0.0.1" }
-vanta-registry = { path = "crates/vanta-registry", version = "0.0.1" }
-vanta-provider = { path = "crates/vanta-provider", version = "0.0.1" }
-vanta-net = { path = "crates/vanta-net", version = "0.0.1" }
-vanta-store = { path = "crates/vanta-store", version = "0.0.1" }
-vanta-install = { path = "crates/vanta-install", version = "0.0.1" }
-vanta-env = { path = "crates/vanta-env", version = "0.0.1" }
-vanta-security = { path = "crates/vanta-security", version = "0.0.1" }
-vanta-state = { path = "crates/vanta-state", version = "0.0.1" }
-vanta-diag = { path = "crates/vanta-diag", version = "0.0.1" }
-vanta-cli = { path = "crates/vanta-cli", version = "0.0.1" }
-vanta-ui = { path = "crates/vanta-ui", version = "0.0.1" }
-vanta-sdk = { path = "crates/vanta-sdk", version = "0.0.1" }
-vanta-migrate = { path = "crates/vanta-migrate", version = "0.0.1" }
+vanta-core = { path = "crates/vanta-core", version = "0.0.2" }
+vanta-platform = { path = "crates/vanta-platform", version = "0.0.2" }
+vanta-config = { path = "crates/vanta-config", version = "0.0.2" }
+vanta-lock = { path = "crates/vanta-lock", version = "0.0.2" }
+vanta-resolve = { path = "crates/vanta-resolve", version = "0.0.2" }
+vanta-registry = { path = "crates/vanta-registry", version = "0.0.2" }
+vanta-provider = { path = "crates/vanta-provider", version = "0.0.2" }
+vanta-net = { path = "crates/vanta-net", version = "0.0.2" }
+vanta-store = { path = "crates/vanta-store", version = "0.0.2" }
+vanta-install = { path = "crates/vanta-install", version = "0.0.2" }
+vanta-env = { path = "crates/vanta-env", version = "0.0.2" }
+vanta-security = { path = "crates/vanta-security", version = "0.0.2" }
+vanta-state = { path = "crates/vanta-state", version = "0.0.2" }
+vanta-diag = { path = "crates/vanta-diag", version = "0.0.2" }
+vanta-cli = { path = "crates/vanta-cli", version = "0.0.2" }
+vanta-ui = { path = "crates/vanta-ui", version = "0.0.2" }
+vanta-sdk = { path = "crates/vanta-sdk", version = "0.0.2" }
+vanta-migrate = { path = "crates/vanta-migrate", version = "0.0.2" }
 # test-only helper, never published. Path-only (no version) so cargo strips it
 # from dependents' published manifests — it appears only in [dev-dependencies].
 vanta-test = { path = "crates/vanta-test" }
