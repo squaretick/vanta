@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/squaretick/vanta/compare/vanta-install-v0.0.3...vanta-install-v0.0.5) - 2026-07-02
+
+### Other
+
+- release v0.0.4
+- Add zip support and expand tool registry
+
 ## [0.0.4](https://github.com/squaretick/vanta/compare/vanta-install-v0.0.3...vanta-install-v0.0.4) - 2026-07-02
 
 ### Other
