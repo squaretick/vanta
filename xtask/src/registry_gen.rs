@@ -1,13 +1,17 @@
 //! `cargo xtask registry-gen` — build and minisign-sign the official Vanta tool
 //! registry from real upstream checksums.
 //!
-//! For a hardcoded list of seed tools/versions this fetches the publishers'
-//! published sha256 digests (node `SHASUMS256.txt`, go `?mode=json`) or hashes
-//! the downloaded asset (GitHub-release tools), maps each asset to Vanta's
-//! platform target tokens, and emits `registry/registry.toml` in the exact
-//! schema [`vanta_registry::Registry::from_toml`] parses. The canonical index
-//! bytes are then signed with the pinned root key →
-//! `registry/registry.toml.minisig`.
+//! For each seed tool the version list is discovered from the upstream index
+//! ([`VersionSpec`]: nodejs.org/go.dev/releases.hashicorp.com/GitHub releases —
+//! full history where checksum manifests exist, a logged latest-N cap where
+//! hashing requires downloading each asset). Checksums come from the
+//! publishers' manifests (`SHASUMS256.txt`, `*_SHA256SUMS`, `*_checksums.txt`,
+//! `.sha256`/`.sha256sum` sidecars, go's `?mode=json`) or, as a fallback, from
+//! hashing the downloaded asset. Each asset is mapped to Vanta's platform
+//! target tokens and emitted as `registry/registry.toml` in the exact schema
+//! [`vanta_registry::Registry::from_toml`] parses (override the output dir
+//! with `VANTA_REGISTRY_OUT`). The canonical index bytes are then signed with
+//! the pinned root key → `registry/registry.toml.minisig`.
 //!
 //! Generation is resilient: a tool/version/platform that cannot be resolved is
 //! logged and skipped rather than aborting the whole run. The output is
@@ -30,14 +34,185 @@ use vanta_provider::ProviderDef;
 /// How to obtain an artifact's sha256 (and optionally size) for one platform.
 #[derive(Clone, Copy)]
 enum ChecksumSource {
-    /// Hash the downloaded asset (universal fallback; used for GitHub releases).
+    /// Hash the downloaded asset (universal fallback; used for GitHub releases
+    /// that publish no checksum manifest). Expensive: full download per asset.
     Download,
     /// node: parse `https://nodejs.org/dist/v{version}/SHASUMS256.txt`.
     NodeShasums,
     /// go: parse `https://go.dev/dl/?mode=json` (carries sha256 + size).
     GoJson,
-    /// Fetch the `<asset-url>.sha256` sidecar (python-build-standalone).
-    Sidecar,
+    /// Fetch the `<asset-url><suffix>` sidecar (e.g. `.sha256`,
+    /// `.sha256sum`) whose first token is the hex digest.
+    Sidecar(&'static str),
+    /// One checksum-manifest per version at the given URL template
+    /// (`{version}` substituted): lines of `<hash>  <filename>`. Covers gh
+    /// `*_checksums.txt`, bun `SHASUMS256.txt`, hashicorp `*_SHA256SUMS`,
+    /// just `SHA256SUMS`, fzf `*_checksums.txt`.
+    VersionSums(&'static str),
+}
+
+/// Where the list of versions for a tool comes from.
+enum VersionSpec {
+    /// Static pins (used where no cheap upstream index exists).
+    Pinned(&'static [&'static str]),
+    /// `https://nodejs.org/dist/index.json` — every release with
+    /// `major >= min_major` (full history, oldest to newest).
+    NodeIndex { min_major: u64 },
+    /// `https://go.dev/dl/?mode=json&include=all` — every stable `go1.X.Y`
+    /// with `minor >= min_minor`.
+    GoIndex { min_minor: u64 },
+    /// `https://releases.hashicorp.com/{product}/index.json` — every
+    /// non-prerelease version `>= min`.
+    HashicorpIndex {
+        product: &'static str,
+        min: (u64, u64),
+    },
+    /// GitHub releases (newest first, one page of 100): non-draft,
+    /// non-prerelease tags with `tag_prefix` stripped; keep at most `latest`
+    /// and only versions `>= min` when set. Used where checksums require
+    /// per-asset work, to bound generation cost; the cap is logged.
+    GitHub {
+        repo: &'static str,
+        tag_prefix: &'static str,
+        latest: usize,
+        min: Option<&'static str>,
+    },
+}
+
+/// Parse a `1.2.3`-ish version into numeric fields (missing → 0; suffixes
+/// after the numeric core are ignored).
+fn parse_ver(v: &str) -> (u64, u64, u64) {
+    let mut it = v.split(['.', '-', '+']).map(|p| p.parse::<u64>().ok());
+    let a = it.next().flatten().unwrap_or(0);
+    let b = it.next().flatten().unwrap_or(0);
+    let c = it.next().flatten().unwrap_or(0);
+    (a, b, c)
+}
+
+/// `true` when `v` looks like a plain stable version (`N.N` / `N.N.N`, no
+/// prerelease suffix).
+fn is_stable_ver(v: &str) -> bool {
+    !v.is_empty()
+        && v.split('.').count() >= 2
+        && v.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+impl VersionSpec {
+    /// Resolve to a concrete newest-first version list.
+    fn resolve(&self, dl: &Downloader, tmp: &Path) -> Result<Vec<String>, String> {
+        match self {
+            VersionSpec::Pinned(list) => Ok(list.iter().map(|s| s.to_string()).collect()),
+            VersionSpec::NodeIndex { min_major } => {
+                let text = fetch_text(
+                    dl,
+                    "https://nodejs.org/dist/index.json",
+                    tmp,
+                    32 * 1024 * 1024,
+                )?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("node index: {e}"))?;
+                let mut out = Vec::new();
+                for rel in v.as_array().ok_or("node index not an array")? {
+                    if let Some(ver) = rel.get("version").and_then(|s| s.as_str()) {
+                        let ver = ver.trim_start_matches('v');
+                        if is_stable_ver(ver) && parse_ver(ver).0 >= *min_major {
+                            out.push(ver.to_string());
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            VersionSpec::GoIndex { min_minor } => {
+                let text = fetch_text(
+                    dl,
+                    "https://go.dev/dl/?mode=json&include=all",
+                    tmp,
+                    32 * 1024 * 1024,
+                )?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("go index: {e}"))?;
+                let mut out = Vec::new();
+                for rel in v.as_array().ok_or("go index not an array")? {
+                    if rel.get("stable").and_then(|s| s.as_bool()) != Some(true) {
+                        continue;
+                    }
+                    if let Some(ver) = rel.get("version").and_then(|s| s.as_str()) {
+                        let ver = ver.trim_start_matches("go");
+                        if is_stable_ver(ver) && parse_ver(ver).1 >= *min_minor {
+                            out.push(ver.to_string());
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            VersionSpec::HashicorpIndex { product, min } => {
+                let url = format!("https://releases.hashicorp.com/{product}/index.json");
+                let text = fetch_text(dl, &url, tmp, 32 * 1024 * 1024)?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("{product} index: {e}"))?;
+                let versions = v
+                    .get("versions")
+                    .and_then(|m| m.as_object())
+                    .ok_or("hashicorp index missing versions")?;
+                let mut out: Vec<String> = versions
+                    .keys()
+                    .filter(|k| is_stable_ver(k))
+                    .filter(|k| {
+                        let (a, b, _) = parse_ver(k);
+                        (a, b) >= *min
+                    })
+                    .cloned()
+                    .collect();
+                out.sort_by(|a, b| parse_ver(b).cmp(&parse_ver(a))); // newest first
+                Ok(out)
+            }
+            VersionSpec::GitHub {
+                repo,
+                tag_prefix,
+                latest,
+                min,
+            } => {
+                let url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
+                let text = fetch_text(dl, &url, tmp, 32 * 1024 * 1024)?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("{repo} releases: {e}"))?;
+                let min_v = min.map(parse_ver);
+                let mut out = Vec::new();
+                for rel in v.as_array().ok_or("releases not an array")? {
+                    let draft = rel.get("draft").and_then(|b| b.as_bool()).unwrap_or(false);
+                    let pre = rel
+                        .get("prerelease")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+                    if draft || pre {
+                        continue;
+                    }
+                    let Some(tag) = rel.get("tag_name").and_then(|s| s.as_str()) else {
+                        continue;
+                    };
+                    let Some(ver) = tag.strip_prefix(tag_prefix) else {
+                        continue;
+                    };
+                    if !is_stable_ver(ver) {
+                        continue;
+                    }
+                    if let Some(m) = min_v {
+                        if parse_ver(ver) < m {
+                            continue;
+                        }
+                    }
+                    out.push(ver.to_string());
+                    if out.len() >= *latest {
+                        eprintln!(
+                            "  note {repo}: capped at latest {latest} versions (checksums need per-asset work)"
+                        );
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
 }
 
 /// A seed tool: its declarative provider plus the versions/platforms to seed.
@@ -45,12 +220,15 @@ struct ToolSpec {
     name: &'static str,
     summary: &'static str,
     archive: &'static str,
+    /// Per-OS archive-kind overrides (canonical OS token → kind), for
+    /// upstreams that ship e.g. tar.gz on linux but zip on macOS.
+    archive_map: &'static [(&'static str, &'static str)],
     strip: u32,
     bin: &'static [&'static str],
     url_template: &'static str,
     os_map: &'static [(&'static str, &'static str)],
     arch_map: &'static [(&'static str, &'static str)],
-    versions: &'static [&'static str],
+    versions: VersionSpec,
     platforms: &'static [&'static str],
     checksum: ChecksumSource,
 }
@@ -62,6 +240,11 @@ impl ToolSpec {
             tool: self.name.to_string(),
             url_template: self.url_template.to_string(),
             archive: self.archive.to_string(),
+            archive_map: self
+                .archive_map
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             strip: self.strip,
             bin: self.bin.iter().map(|s| s.to_string()).collect(),
             os_map: self
@@ -78,153 +261,409 @@ impl ToolSpec {
     }
 }
 
-/// The seed list: real upstream tools at current stable versions.
+/// The seed list: real upstream tools. Version lists come from upstream
+/// indexes ([`VersionSpec`]) — full history where the publisher ships checksum
+/// manifests, a logged latest-N cap where checksums require hashing each
+/// downloaded asset.
 fn specs() -> Vec<ToolSpec> {
+    const UNIX4: &[&str] = &[
+        "linux/x86_64/gnu",
+        "linux/aarch64/gnu",
+        "macos/x86_64",
+        "macos/aarch64",
+    ];
     vec![
         ToolSpec {
             name: "node",
             summary: "Node.js JavaScript runtime",
             archive: "tar.gz",
+            archive_map: &[],
             strip: 1,
-            bin: &["bin/node"],
+            bin: &["bin/node", "bin/npm", "bin/npx"],
             url_template:
                 "https://nodejs.org/dist/v{version}/node-v{version}-{os}-{arch}.{ext}",
             os_map: &[("macos", "darwin"), ("linux", "linux")],
             arch_map: &[("x86_64", "x64"), ("aarch64", "arm64")],
-            versions: &["22.11.0", "20.18.0"],
-            // node ships glibc tarballs for unix; the windows build is a .zip
-            // (a different archive kind) so it is intentionally omitted.
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
+            versions: VersionSpec::NodeIndex { min_major: 18 },
+            platforms: UNIX4,
             checksum: ChecksumSource::NodeShasums,
         },
         ToolSpec {
             name: "go",
             summary: "The Go programming language toolchain",
             archive: "tar.gz",
+            archive_map: &[],
             strip: 1,
             bin: &["bin/go", "bin/gofmt"],
             url_template: "https://go.dev/dl/go{version}.{os}-{arch}.{ext}",
             os_map: &[("macos", "darwin")],
             arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
-            versions: &["1.23.4", "1.22.10"],
-            // unix tarballs only; the windows distribution is a .zip.
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
+            versions: VersionSpec::GoIndex { min_minor: 21 },
+            platforms: UNIX4,
             checksum: ChecksumSource::GoJson,
+        },
+        ToolSpec {
+            name: "python",
+            summary: "CPython (python-build-standalone, install_only builds)",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 1,
+            bin: &["bin/python3"],
+            url_template:
+                "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-{version}-{arch}-{os}-install_only.{ext}",
+            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-gnu")],
+            arch_map: &[],
+            versions: VersionSpec::Pinned(&["3.12.7+20241016", "3.11.10+20241016"]),
+            platforms: UNIX4,
+            checksum: ChecksumSource::Sidecar(".sha256"),
+        },
+        ToolSpec {
+            name: "uv",
+            summary: "uv — an extremely fast Python package and project manager",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 1,
+            bin: &["uv", "uvx"],
+            url_template:
+                "https://github.com/astral-sh/uv/releases/download/{version}/uv-{arch}-{os}.{ext}",
+            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-gnu")],
+            arch_map: &[],
+            versions: VersionSpec::GitHub {
+                repo: "astral-sh/uv",
+                tag_prefix: "",
+                latest: 20,
+                min: Some("0.5.0"),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Sidecar(".sha256"),
         },
         ToolSpec {
             name: "ripgrep",
             summary: "ripgrep (rg) — recursive line-oriented search",
             archive: "tar.gz",
+            archive_map: &[],
             strip: 1,
             bin: &["rg"],
             url_template:
                 "https://github.com/BurntSushi/ripgrep/releases/download/{version}/ripgrep-{version}-{arch}-{os}.{ext}",
-            // The musl build is a static binary that runs on any Linux, so we map
-            // the canonical `linux` token to it and store it under the gnu token
-            // that `Platform::current()` reports.
             os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-musl")],
             arch_map: &[],
-            versions: &["14.1.1"],
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
+            versions: VersionSpec::GitHub {
+                repo: "BurntSushi/ripgrep",
+                tag_prefix: "",
+                latest: 4,
+                min: None,
+            },
+            platforms: UNIX4,
             checksum: ChecksumSource::Download,
         },
         ToolSpec {
             name: "fd",
             summary: "fd — a fast, user-friendly alternative to find",
             archive: "tar.gz",
+            archive_map: &[],
             strip: 1,
             bin: &["fd"],
             url_template:
                 "https://github.com/sharkdp/fd/releases/download/v{version}/fd-v{version}-{arch}-{os}.{ext}",
             os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-musl")],
             arch_map: &[],
-            versions: &["10.2.0"],
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
+            versions: VersionSpec::GitHub {
+                repo: "sharkdp/fd",
+                tag_prefix: "v",
+                latest: 4,
+                min: None,
+            },
+            platforms: UNIX4,
             checksum: ChecksumSource::Download,
         },
         ToolSpec {
             name: "jq",
             summary: "jq — command-line JSON processor",
             archive: "raw",
+            archive_map: &[],
             strip: 0,
             bin: &["jq"],
             url_template:
                 "https://github.com/jqlang/jq/releases/download/jq-{version}/jq-{os}-{arch}",
             os_map: &[],
             arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
-            versions: &["1.7.1"],
-            // raw single-file binaries; the windows asset has a `.exe` suffix and
-            // is omitted (the `{ext}`-less template cannot express it).
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
+            versions: VersionSpec::GitHub {
+                repo: "jqlang/jq",
+                tag_prefix: "jq-",
+                latest: 3,
+                min: None,
+            },
+            platforms: UNIX4,
             checksum: ChecksumSource::Download,
         },
         ToolSpec {
-            name: "uv",
-            summary: "uv — an extremely fast Python package and project manager",
-            archive: "tar.gz",
-            strip: 1,
-            bin: &["uv", "uvx"],
-            url_template:
-                "https://github.com/astral-sh/uv/releases/download/{version}/uv-{arch}-{os}.{ext}",
-            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-musl")],
-            arch_map: &[],
-            versions: &["0.5.11"],
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
-            checksum: ChecksumSource::Download,
-        },
-        ToolSpec {
-            name: "python",
-            summary: "CPython standalone build (astral-sh/python-build-standalone)",
-            archive: "tar.gz",
+            name: "terraform",
+            summary: "HashiCorp Terraform — infrastructure as code",
+            archive: "zip",
+            archive_map: &[],
             strip: 0,
-            bin: &["python/bin/python3"],
-            // python-build-standalone embeds the release tag (a date) in the path
-            // AND a `+{tag}` build-metadata suffix in the version; we pin one
-            // release so every seeded python version shares the `20241016` tag.
+            bin: &["terraform"],
             url_template:
-                "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-{version}-{arch}-{os}-install_only.tar.gz",
+                "https://releases.hashicorp.com/terraform/{version}/terraform_{version}_{os}_{arch}.{ext}",
+            os_map: &[("macos", "darwin")],
+            arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
+            versions: VersionSpec::HashicorpIndex {
+                product: "terraform",
+                min: (1, 3),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::VersionSums(
+                "https://releases.hashicorp.com/terraform/{version}/terraform_{version}_SHA256SUMS",
+            ),
+        },
+        ToolSpec {
+            name: "gh",
+            summary: "GitHub CLI",
+            archive: "tar.gz",
+            // gh ships tar.gz on linux but zip on macOS.
+            archive_map: &[("macos", "zip")],
+            strip: 1,
+            bin: &["bin/gh"],
+            url_template:
+                "https://github.com/cli/cli/releases/download/v{version}/gh_{version}_{os}_{arch}.{ext}",
+            os_map: &[("macos", "macOS")],
+            arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
+            versions: VersionSpec::GitHub {
+                repo: "cli/cli",
+                tag_prefix: "v",
+                latest: 15,
+                min: Some("2.40.0"),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::VersionSums(
+                "https://github.com/cli/cli/releases/download/v{version}/gh_{version}_checksums.txt",
+            ),
+        },
+        ToolSpec {
+            name: "pnpm",
+            summary: "pnpm — fast, disk-efficient package manager",
+            archive: "raw",
+            archive_map: &[],
+            strip: 0,
+            bin: &["pnpm"],
+            url_template:
+                "https://github.com/pnpm/pnpm/releases/download/v{version}/pnpm-{os}-{arch}",
+            os_map: &[("linux", "linuxstatic"), ("macos", "macos")],
+            arch_map: &[("x86_64", "x64"), ("aarch64", "arm64")],
+            versions: VersionSpec::GitHub {
+                repo: "pnpm/pnpm",
+                tag_prefix: "v",
+                latest: 5,
+                min: Some("9.0.0"),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Download,
+        },
+        ToolSpec {
+            name: "deno",
+            summary: "Deno — a secure JavaScript/TypeScript runtime",
+            archive: "zip",
+            archive_map: &[],
+            strip: 0,
+            bin: &["deno"],
+            url_template:
+                "https://github.com/denoland/deno/releases/download/v{version}/deno-{arch}-{os}.{ext}",
             os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-gnu")],
             arch_map: &[],
-            versions: &["3.12.7+20241016", "3.11.10+20241016"],
-            // install_only tarballs lay out `python/bin/python3` on unix; the
-            // windows layout differs, so windows is omitted to keep `bin` correct.
-            platforms: &[
-                "linux/x86_64/gnu",
-                "linux/aarch64/gnu",
-                "macos/x86_64",
-                "macos/aarch64",
-            ],
-            checksum: ChecksumSource::Sidecar,
+            versions: VersionSpec::GitHub {
+                repo: "denoland/deno",
+                tag_prefix: "v",
+                latest: 10,
+                min: Some("2.0.0"),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Sidecar(".sha256sum"),
+        },
+        ToolSpec {
+            name: "bun",
+            summary: "Bun — fast all-in-one JavaScript runtime & toolkit",
+            archive: "zip",
+            archive_map: &[],
+            strip: 1,
+            bin: &["bun"],
+            url_template:
+                "https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-{os}-{arch}.{ext}",
+            os_map: &[("macos", "darwin")],
+            arch_map: &[("x86_64", "x64")],
+            versions: VersionSpec::GitHub {
+                repo: "oven-sh/bun",
+                tag_prefix: "bun-v",
+                latest: 10,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::VersionSums(
+                "https://github.com/oven-sh/bun/releases/download/bun-v{version}/SHASUMS256.txt",
+            ),
+        },
+        ToolSpec {
+            name: "kubectl",
+            summary: "kubectl — the Kubernetes command-line tool",
+            archive: "raw",
+            archive_map: &[],
+            strip: 0,
+            bin: &["kubectl"],
+            url_template: "https://dl.k8s.io/release/v{version}/bin/{os}/{arch}/kubectl",
+            os_map: &[("macos", "darwin")],
+            arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
+            versions: VersionSpec::GitHub {
+                repo: "kubernetes/kubernetes",
+                tag_prefix: "v",
+                latest: 30,
+                min: Some("1.28.0"),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Sidecar(".sha256"),
+        },
+        ToolSpec {
+            name: "helm",
+            summary: "Helm — the Kubernetes package manager",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 1,
+            bin: &["helm"],
+            url_template: "https://get.helm.sh/helm-v{version}-{os}-{arch}.{ext}",
+            os_map: &[("macos", "darwin")],
+            arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
+            versions: VersionSpec::GitHub {
+                repo: "helm/helm",
+                tag_prefix: "v",
+                latest: 12,
+                min: Some("3.12.0"),
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Sidecar(".sha256sum"),
+        },
+        ToolSpec {
+            name: "just",
+            summary: "just — a handy command runner",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 0,
+            bin: &["just"],
+            url_template:
+                "https://github.com/casey/just/releases/download/{version}/just-{version}-{arch}-{os}.{ext}",
+            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-musl")],
+            arch_map: &[],
+            versions: VersionSpec::GitHub {
+                repo: "casey/just",
+                tag_prefix: "",
+                latest: 5,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::VersionSums(
+                "https://github.com/casey/just/releases/download/{version}/SHA256SUMS",
+            ),
+        },
+        ToolSpec {
+            name: "fzf",
+            summary: "fzf — a command-line fuzzy finder",
+            archive: "tar.gz",
+            // fzf ships tar.gz on linux but zip on macOS.
+            archive_map: &[("macos", "zip")],
+            strip: 0,
+            bin: &["fzf"],
+            url_template:
+                "https://github.com/junegunn/fzf/releases/download/v{version}/fzf-{version}-{os}_{arch}.{ext}",
+            os_map: &[("macos", "darwin")],
+            arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
+            versions: VersionSpec::GitHub {
+                repo: "junegunn/fzf",
+                tag_prefix: "v",
+                latest: 5,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::VersionSums(
+                "https://github.com/junegunn/fzf/releases/download/v{version}/fzf_{version}_checksums.txt",
+            ),
+        },
+        ToolSpec {
+            name: "yq",
+            summary: "yq — portable command-line YAML/JSON/XML processor",
+            archive: "raw",
+            archive_map: &[],
+            strip: 0,
+            bin: &["yq"],
+            url_template:
+                "https://github.com/mikefarah/yq/releases/download/v{version}/yq_{os}_{arch}",
+            os_map: &[("macos", "darwin")],
+            arch_map: &[("x86_64", "amd64"), ("aarch64", "arm64")],
+            versions: VersionSpec::GitHub {
+                repo: "mikefarah/yq",
+                tag_prefix: "v",
+                latest: 5,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Download,
+        },
+        ToolSpec {
+            name: "zoxide",
+            summary: "zoxide — a smarter cd command",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 0,
+            bin: &["zoxide"],
+            url_template:
+                "https://github.com/ajeetdsouza/zoxide/releases/download/v{version}/zoxide-{version}-{arch}-{os}.{ext}",
+            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-musl")],
+            arch_map: &[],
+            versions: VersionSpec::GitHub {
+                repo: "ajeetdsouza/zoxide",
+                tag_prefix: "v",
+                latest: 4,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Download,
+        },
+        ToolSpec {
+            name: "bat",
+            summary: "bat — a cat clone with wings",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 1,
+            bin: &["bat"],
+            url_template:
+                "https://github.com/sharkdp/bat/releases/download/v{version}/bat-v{version}-{arch}-{os}.{ext}",
+            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-gnu")],
+            arch_map: &[],
+            versions: VersionSpec::GitHub {
+                repo: "sharkdp/bat",
+                tag_prefix: "v",
+                latest: 4,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Download,
+        },
+        ToolSpec {
+            name: "delta",
+            summary: "delta — a syntax-highlighting pager for git and diff",
+            archive: "tar.gz",
+            archive_map: &[],
+            strip: 1,
+            bin: &["delta"],
+            url_template:
+                "https://github.com/dandavison/delta/releases/download/{version}/delta-{version}-{arch}-{os}.{ext}",
+            os_map: &[("macos", "apple-darwin"), ("linux", "unknown-linux-gnu")],
+            arch_map: &[],
+            versions: VersionSpec::GitHub {
+                repo: "dandavison/delta",
+                tag_prefix: "",
+                latest: 4,
+                min: None,
+            },
+            platforms: UNIX4,
+            checksum: ChecksumSource::Download,
         },
     ]
 }
@@ -253,6 +692,8 @@ pub fn run() -> Result<(), String> {
     // Per-version caches for the publishers' checksum manifests.
     let mut node_shasums: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     let mut go_json: Option<serde_json::Value> = None;
+    // checksum-manifest URL → (filename → hash), for VersionSums sources.
+    let mut sums_cache: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
     let mut included = 0usize;
     let mut skipped = 0usize;
@@ -269,7 +710,22 @@ pub fn run() -> Result<(), String> {
         let mut version_blocks = String::new();
         let mut tool_any = false;
 
-        for version in spec.versions {
+        let versions = match spec.versions.resolve(&dl, &tmp) {
+            Ok(v) if !v.is_empty() => v,
+            Ok(_) => {
+                eprintln!("  SKIP tool {}: upstream lists no versions", spec.name);
+                continue;
+            }
+            Err(e) => {
+                eprintln!("  SKIP tool {}: version discovery failed: {e}", spec.name);
+                skipped += 1;
+                continue;
+            }
+        };
+        eprintln!("tool {}: {} version(s) discovered", spec.name, versions.len());
+
+        for version in &versions {
+            let version = version.as_str();
             let mut platform_rows: BTreeMap<String, PlatformResult> = BTreeMap::new();
 
             for token in spec.platforms {
@@ -298,6 +754,7 @@ pub fn run() -> Result<(), String> {
                     &tmp,
                     &mut node_shasums,
                     &mut go_json,
+                    &mut sums_cache,
                 ) {
                     Ok(res) => {
                         eprintln!(
@@ -349,7 +806,11 @@ pub fn run() -> Result<(), String> {
         out.push_str(&version_blocks);
     }
 
-    let registry_dir = repo_root().join("registry");
+    // VANTA_REGISTRY_OUT redirects output (e.g. a dev-key run for local
+    // testing) so the published, root-signed registry/ files are not clobbered.
+    let registry_dir = std::env::var("VANTA_REGISTRY_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| repo_root().join("registry"));
     std::fs::create_dir_all(&registry_dir).map_err(|e| format!("creating registry dir: {e}"))?;
     let toml_path = registry_dir.join("registry.toml");
     std::fs::write(&toml_path, out.as_bytes())
@@ -385,6 +846,12 @@ fn render_tool_header(spec: &ToolSpec, provider: &ProviderDef) -> String {
     s.push_str(&format!("strip = {}\n", provider.strip));
     let bins: Vec<String> = provider.bin.iter().map(|b| toml_str(b)).collect();
     s.push_str(&format!("bin = [{}]\n", bins.join(", ")));
+    if !provider.archive_map.is_empty() {
+        s.push_str(&format!("\n[tools.{}.provider.archive_map]\n", spec.name));
+        for (k, v) in &provider.archive_map {
+            s.push_str(&format!("{} = {}\n", toml_str(k), toml_str(v)));
+        }
+    }
     if !provider.os_map.is_empty() {
         s.push_str(&format!("\n[tools.{}.provider.os_map]\n", spec.name));
         for (k, v) in &provider.os_map {
@@ -402,6 +869,7 @@ fn render_tool_header(spec: &ToolSpec, provider: &ProviderDef) -> String {
 }
 
 /// Obtain the sha256 (and optional size) for one rendered artifact URL.
+#[allow(clippy::too_many_arguments)]
 fn resolve_checksum(
     spec: &ToolSpec,
     version: &str,
@@ -410,6 +878,7 @@ fn resolve_checksum(
     tmp: &Path,
     node_shasums: &mut BTreeMap<String, BTreeMap<String, String>>,
     go_json: &mut Option<serde_json::Value>,
+    sums_cache: &mut BTreeMap<String, BTreeMap<String, String>>,
 ) -> Result<PlatformResult, String> {
     let filename = url.rsplit('/').next().unwrap_or(url).to_string();
     match spec.checksum {
@@ -469,16 +938,42 @@ fn resolve_checksum(
             }
             Err(format!("{filename} absent from go.dev json"))
         }
-        ChecksumSource::Sidecar => {
-            let sidecar = format!("{url}.sha256");
+        ChecksumSource::Sidecar(suffix) => {
+            let sidecar = format!("{url}{suffix}");
             let text = fetch_text(dl, &sidecar, tmp, 4096)?;
             let hash = text
                 .split_whitespace()
                 .next()
                 .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-                .ok_or("malformed .sha256 sidecar")?;
+                .ok_or_else(|| format!("malformed {suffix} sidecar"))?;
             Ok(PlatformResult {
                 sha256: hash.to_lowercase(),
+                size: None,
+            })
+        }
+        ChecksumSource::VersionSums(template) => {
+            let sums_url = template.replace("{version}", version);
+            let map = sums_cache.entry(sums_url.clone()).or_default();
+            if map.is_empty() {
+                let text = fetch_text(dl, &sums_url, tmp, 8 * 1024 * 1024)?;
+                for line in text.lines() {
+                    let mut it = line.split_whitespace();
+                    if let (Some(hash), Some(file)) = (it.next(), it.next()) {
+                        if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                            // Some manifests mark binary mode with a leading `*`.
+                            let file = file.trim_start_matches('*');
+                            // Some list paths; match on the basename.
+                            let base = file.rsplit('/').next().unwrap_or(file);
+                            map.insert(base.to_string(), hash.to_lowercase());
+                        }
+                    }
+                }
+            }
+            let sha = map
+                .get(&filename)
+                .ok_or_else(|| format!("{filename} absent from {sums_url}"))?;
+            Ok(PlatformResult {
+                sha256: sha.clone(),
                 size: None,
             })
         }

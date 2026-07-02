@@ -174,4 +174,33 @@ sha256 = "bbbb"
         assert_eq!(reg.search("nod"), vec!["node"]);
         assert!(reg.tool("python").is_none());
     }
+
+    #[test]
+    fn parses_archive_map_and_defaults_empty() {
+        // Without an archive_map table the field defaults to empty (older
+        // indexes keep parsing).
+        let reg = Registry::from_toml(SAMPLE).unwrap();
+        assert!(reg.tool("node").unwrap().provider.archive_map.is_empty());
+
+        let with_map = r#"
+[tools.gh.provider]
+id = "official/gh"
+tool = "gh"
+url_template = "https://example.com/gh_{version}_{os}_{arch}.{ext}"
+archive = "tar.gz"
+strip = 1
+bin = ["bin/gh"]
+[tools.gh.provider.archive_map]
+macos = "zip"
+
+[[tools.gh.version]]
+version = "2.63.0"
+channel = "stable"
+[tools.gh.version.platforms."macos/aarch64"]
+sha256 = "cccc"
+"#;
+        let reg = Registry::from_toml(with_map).unwrap();
+        let provider = &reg.tool("gh").unwrap().provider;
+        assert_eq!(provider.archive_map.get("macos").map(String::as_str), Some("zip"));
+    }
 }

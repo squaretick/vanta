@@ -6,7 +6,7 @@
 //! atomically into the content-addressed store, and record a new generation.
 //!
 //! The entry point takes a resolved [`Artifact`] (produced by `vanta-resolve`).
-//! Supported archive formats: `tar.gz`/`tgz` and `raw`.
+//! Supported archive formats: `tar.gz`/`tgz`, `zip`, and `raw`.
 #![forbid(unsafe_code)]
 
 use std::fs;
@@ -409,6 +409,7 @@ pub fn extract(
 ) -> VtaResult<()> {
     match archive {
         "tar.gz" | "tgz" => extract_targz(src, dest, strip, max_decompressed),
+        "zip" => extract_zip(src, dest, strip, max_decompressed),
         "raw" => {
             fs::create_dir_all(dest).map_err(|e| io(dest, e))?;
             let out = dest.join(raw_name);
@@ -419,9 +420,100 @@ pub fn extract(
         other => Err(VtaError::new(
             Area::Inst,
             3,
-            format!("unsupported archive kind `{other}` (supported: tar.gz, tgz, raw)"),
+            format!("unsupported archive kind `{other}` (supported: tar.gz, tgz, zip, raw)"),
         )),
     }
+}
+
+/// Extract a `.zip` under the same security model as the tar path: path
+/// traversal rejected (zip-slip), a shared decompressed-bytes budget across all
+/// entries (M8), link targets validated before creation (M5), and
+/// setuid/setgid/sticky stripped from materialized modes (M5).
+fn extract_zip(src: &Path, dest: &Path, strip: u32, max_decompressed: u64) -> VtaResult<()> {
+    use std::path::PathBuf;
+    let file = fs::File::open(src).map_err(|e| io(src, e))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| VtaError::new(Area::Inst, 1, format!("reading zip archive: {e}")))?;
+    fs::create_dir_all(dest).map_err(|e| io(dest, e))?;
+    let dest_canon = dest.canonicalize().map_err(|e| io(dest, e))?;
+    // M8: one budget across all entries, so many mid-size entries cannot
+    // multiply past the ceiling any more than one huge entry can.
+    let mut budget = max_decompressed;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| VtaError::new(Area::Inst, 1, format!("reading zip entry: {e}")))?;
+        // `enclosed_name` refuses absolute paths and any `..` component.
+        let Some(path) = entry.enclosed_name() else {
+            return Err(traversal());
+        };
+        let stripped: PathBuf = path.components().skip(strip as usize).collect();
+        if stripped.as_os_str().is_empty() {
+            continue;
+        }
+        if escapes(&stripped) {
+            return Err(traversal());
+        }
+        let out = dest.join(&stripped);
+
+        if entry.is_dir() {
+            fs::create_dir_all(&out).map_err(|e| io(&out, e))?;
+            continue;
+        }
+
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+            // M5: realpath of the parent must stay under the staging root
+            // (defeats symlinked ancestors created by earlier entries).
+            let parent_canon = parent.canonicalize().map_err(|e| io(parent, e))?;
+            if !parent_canon.starts_with(&dest_canon) {
+                return Err(traversal());
+            }
+        }
+
+        let mode = entry.unix_mode();
+        // M5: symlink entries (mode S_IFLNK) carry the target as file content.
+        // Validate the target exactly like the tar path before creating.
+        if mode.is_some_and(|m| m & 0o170000 == 0o120000) {
+            let mut target = String::new();
+            LimitReader::new(&mut entry, 4096)
+                .read_to_string(&mut target)
+                .map_err(|e| VtaError::new(Area::Inst, 1, format!("zip link target: {e}")))?;
+            let target_path = Path::new(&target);
+            if target_path.is_absolute() || escapes(target_path) {
+                return Err(VtaError::new(
+                    Area::Inst,
+                    1,
+                    format!(
+                        "archive link entry `{}` has an unsafe target `{target}` (rejected)",
+                        stripped.display()
+                    ),
+                ));
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target_path, &out).map_err(|e| io(&out, e))?;
+            // Non-unix: skip symlinks (tool zips for windows do not rely on them).
+            continue;
+        }
+
+        let mut writer = fs::File::create(&out).map_err(|e| io(&out, e))?;
+        let mut limited = LimitReader::new(&mut entry, budget);
+        let copied = std::io::copy(&mut limited, &mut writer)
+            .map_err(|e| VtaError::new(Area::Inst, 1, format!("unpacking zip entry: {e}")))?;
+        budget = budget.saturating_sub(copied);
+
+        // Apply the entry's permission bits sans special bits (M5); default to
+        // 0644 when the zip carries no unix modes (created on Windows).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let safe = mode.map(|m| m & 0o777).unwrap_or(0o644);
+            let _ = fs::set_permissions(&out, fs::Permissions::from_mode(safe));
+        }
+        strip_special_bits(&out);
+    }
+    Ok(())
 }
 
 fn extract_targz(src: &Path, dest: &Path, strip: u32, max_decompressed: u64) -> VtaResult<()> {
@@ -647,6 +739,89 @@ mod tests {
         let key = store.publish_tree(&staging).unwrap();
         assert!(store.has(&key));
         assert!(store.verify_entry(&key).unwrap());
+        let _ = fs::remove_dir_all(&h);
+    }
+
+    /// Build an in-memory zip: (path, mode, payload) triples.
+    fn make_zip(entries: &[(&str, u32, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, mode, payload) in entries {
+            let opts = zip::write::SimpleFileOptions::default().unix_permissions(*mode);
+            w.start_file(*name, opts).unwrap();
+            w.write_all(payload).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn extracts_zip_with_strip_and_modes() {
+        let h = home("zip");
+        let store = Store::open(&h).unwrap();
+        let bytes = make_zip(&[
+            ("terraform_1.9.0/terraform", 0o755, b"#!/bin/sh\necho tf\n"),
+            ("terraform_1.9.0/README.md", 0o644, b"docs"),
+        ]);
+        let archive_path = store.downloads_dir().join("a.zip");
+        fs::write(&archive_path, &bytes).unwrap();
+
+        let staging = store.new_staging().unwrap();
+        extract(
+            "zip",
+            &archive_path,
+            &staging,
+            "terraform",
+            1,
+            DEFAULT_MAX_DECOMPRESSED,
+        )
+        .unwrap();
+        let bin = staging.join("terraform");
+        assert!(bin.exists());
+        assert!(staging.join("README.md").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&bin).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "exec bit preserved from zip modes");
+        }
+        let _ = fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn zip_slip_rejected() {
+        let h = home("zipslip");
+        let store = Store::open(&h).unwrap();
+        let bytes = make_zip(&[("../evil", 0o644, b"pwn")]);
+        let archive_path = store.downloads_dir().join("evil.zip");
+        fs::write(&archive_path, &bytes).unwrap();
+
+        let staging = store.new_staging().unwrap();
+        let err = extract(
+            "zip",
+            &archive_path,
+            &staging,
+            "evil",
+            0,
+            DEFAULT_MAX_DECOMPRESSED,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("traversal"), "{err}");
+        let _ = fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn zip_decompression_budget_enforced() {
+        let h = home("zipbomb");
+        let store = Store::open(&h).unwrap();
+        let big = vec![0u8; 64 * 1024];
+        let bytes = make_zip(&[("big.bin", 0o644, &big[..])]);
+        let archive_path = store.downloads_dir().join("big.zip");
+        fs::write(&archive_path, &bytes).unwrap();
+
+        let staging = store.new_staging().unwrap();
+        // Budget below the decompressed size must abort, not fill the disk.
+        let err = extract("zip", &archive_path, &staging, "big", 0, 1024).unwrap_err();
+        assert!(err.to_string().contains("decompress"), "{err}");
         let _ = fs::remove_dir_all(&h);
     }
 

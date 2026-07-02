@@ -15,6 +15,7 @@ vanta-state.workspace = true
 vanta-security.workspace = true
 flate2 = { workspace = true }
 tar = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 vanta-test.workspace = true

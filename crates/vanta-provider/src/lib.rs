@@ -29,6 +29,12 @@ pub struct ProviderDef {
     pub url_template: String,
     /// Archive kind: `tar.gz` / `tgz` / `zip` / `raw`.
     pub archive: String,
+    /// Per-OS override of the archive kind, keyed by the *canonical* OS token
+    /// (`linux`/`macos`/`windows`). Some upstreams ship different formats per
+    /// OS (e.g. gh: linux `tar.gz`, macOS `zip`); an entry here overrides
+    /// [`ProviderDef::archive`] for that OS.
+    #[serde(default)]
+    pub archive_map: BTreeMap<String, String>,
     /// Components to strip when materializing (recorded for the store layout).
     #[serde(default)]
     pub strip: u32,
@@ -55,16 +61,17 @@ impl ProviderDef {
     ) -> Artifact {
         let os = self.map_os(platform);
         let arch = self.map_arch(platform);
+        let archive = self.archive_for(platform);
         let url = self
             .url_template
             .replace("{version}", version)
             .replace("{os}", &os)
             .replace("{arch}", &arch)
-            .replace("{ext}", ext_for(&self.archive));
+            .replace("{ext}", ext_for(&archive));
         Artifact {
             url,
             mirrors: Vec::new(),
-            archive: self.archive.clone(),
+            archive,
             size,
             checksum,
             signature: None,
@@ -73,6 +80,15 @@ impl ProviderDef {
             strip: self.strip,
             store_key: None,
         }
+    }
+
+    /// The archive kind for `platform`: the per-OS override when present
+    /// (keyed by the canonical OS token), else the default [`Self::archive`].
+    pub fn archive_for(&self, platform: &Platform) -> String {
+        self.archive_map
+            .get(platform.os.as_str())
+            .cloned()
+            .unwrap_or_else(|| self.archive.clone())
     }
 
     fn map_os(&self, platform: &Platform) -> String {
@@ -118,11 +134,40 @@ mod tests {
             url_template: "https://nodejs.org/dist/v{version}/node-v{version}-{os}-{arch}.{ext}"
                 .into(),
             archive: "tar.gz".into(),
+            archive_map: BTreeMap::new(),
             strip: 1,
             bin: vec!["bin/node".into()],
             os_map,
             arch_map,
         }
+    }
+
+    #[test]
+    fn archive_map_overrides_kind_and_ext_per_os() {
+        let mut p = node_provider();
+        p.archive_map.insert("macos".into(), "zip".into());
+        let mac = Platform {
+            os: Os::Macos,
+            arch: Arch::Aarch64,
+            libc: Libc::None,
+        };
+        let linux = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+            libc: Libc::Gnu,
+        };
+        fn cs() -> Checksum {
+            Checksum {
+                algo: "sha256".into(),
+                value: "00".into(),
+            }
+        }
+        let mac_art = p.render_artifact("1.0.0", &mac, cs(), None);
+        let linux_art = p.render_artifact("1.0.0", &linux, cs(), None);
+        assert_eq!(mac_art.archive, "zip");
+        assert!(mac_art.url.ends_with(".zip"));
+        assert_eq!(linux_art.archive, "tar.gz");
+        assert!(linux_art.url.ends_with(".tar.gz"));
     }
 
     #[test]

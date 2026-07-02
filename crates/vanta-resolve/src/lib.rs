@@ -25,9 +25,10 @@ impl<'a> Resolver<'a> {
 
     /// Resolve `request` for every platform in `targets`.
     pub fn resolve(&self, request: &Request, targets: &[Platform]) -> VtaResult<Resolution> {
-        let entry = self.registry.tool(&request.tool).ok_or_else(|| {
-            VtaError::new(Area::Res, 3, format!("unknown tool `{}`", request.tool))
-        })?;
+        let entry = self
+            .registry
+            .tool(&request.tool)
+            .ok_or_else(|| self.unknown_tool_error(&request.tool))?;
 
         let candidates: Vec<&VersionEntry> = entry
             .versions
@@ -40,14 +41,7 @@ impl<'a> Resolver<'a> {
             .copied()
             .max_by(|a, b| cmp_version(&a.version, &b.version))
             .ok_or_else(|| {
-                VtaError::new(
-                    Area::Res,
-                    1,
-                    format!(
-                        "no version of `{}` satisfies `{}`",
-                        request.tool, request.version
-                    ),
-                )
+                self.no_matching_version_error(&request.tool, &request.version.to_string(), entry)
             })?;
 
         let mut per_platform = Vec::new();
@@ -101,6 +95,138 @@ impl<'a> Resolver<'a> {
             per_platform,
         })
     }
+
+    /// Build the `unknown tool` error, enriched with close-match suggestions and
+    /// the list of tools the registry actually knows, so a typo or a
+    /// not-yet-supported tool produces an actionable message instead of a
+    /// dead end.
+    fn unknown_tool_error(&self, requested: &str) -> VtaError {
+        let names: Vec<&str> = self.registry.tools.keys().map(String::as_str).collect();
+
+        // "Did you mean": names within a small edit distance (scaled to the
+        // requested length) or that contain the request as a substring, best
+        // first, capped to a few.
+        let want = requested.to_lowercase();
+        let budget = (want.len() / 3).max(2);
+        let mut scored: Vec<(usize, &str)> = names
+            .iter()
+            .filter_map(|n| {
+                let d = levenshtein(&want, &n.to_lowercase());
+                let contains = n.to_lowercase().contains(&want) || want.contains(&n.to_lowercase());
+                if d <= budget || contains {
+                    Some((if contains { 0 } else { d }, *n))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let suggestions: Vec<&str> = scored.into_iter().take(3).map(|(_, n)| n).collect();
+
+        let mut msg = format!("unknown tool `{requested}`");
+        // Tools people ask for that have no official prebuilt binaries: point
+        // at the canonical installer instead of a dead end.
+        let hint = match requested {
+            "rust" | "rustc" | "cargo" => {
+                Some("rust is distributed via rustup (https://rustup.rs); a vanta source-build provider is planned")
+            }
+            "ruby" => Some(
+                "ruby publishes no official prebuilt binaries; a vanta source-build provider is planned",
+            ),
+            "java" | "jdk" => Some("try `vanta search` for a packaged JDK, or use SDKMAN meanwhile"),
+            _ => None,
+        };
+        if let Some(h) = hint {
+            msg.push_str(&format!("\n  note: {h}"));
+        }
+        if !suggestions.is_empty() {
+            msg.push_str(&format!("\n  did you mean: {}?", suggestions.join(", ")));
+        }
+        if names.is_empty() {
+            msg.push_str(
+                "\n  the registry index is empty (offline, or no registry configured)",
+            );
+        } else {
+            // Cap the listing so a large future registry stays readable.
+            let shown = 20;
+            let list = names
+                .iter()
+                .take(shown)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            msg.push_str(&format!("\n  available tools: {list}"));
+            if names.len() > shown {
+                msg.push_str(&format!(", … (+{} more)", names.len() - shown));
+            }
+            msg.push_str("\n  run `vanta search <term>` to search the registry");
+        }
+        VtaError::new(Area::Res, 3, msg)
+    }
+
+    /// Build the `no version satisfies` error, listing the versions the registry
+    /// actually carries (newest first) so the user can pick a real one instead
+    /// of guessing. A stale index (e.g. asking for `24` when only `22`/`20` are
+    /// seeded) then reads as an obvious mismatch.
+    fn no_matching_version_error(
+        &self,
+        tool: &str,
+        want: &str,
+        entry: &vanta_registry::ToolEntry,
+    ) -> VtaError {
+        let mut available: Vec<&str> = entry
+            .versions
+            .iter()
+            .filter(|v| !v.yanked)
+            .map(|v| v.version.as_str())
+            .collect();
+        available.sort_by(|a, b| cmp_version(b, a)); // newest first
+
+        let mut msg = format!("no version of `{tool}` satisfies `{want}`");
+        if available.is_empty() {
+            msg.push_str("\n  the registry lists no (non-yanked) versions for this tool");
+        } else {
+            let shown = 10;
+            let list = available
+                .iter()
+                .take(shown)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            msg.push_str(&format!("\n  available: {list}"));
+            if available.len() > shown {
+                msg.push_str(&format!(", … (+{} more)", available.len() - shown));
+            }
+            msg.push_str(&format!(
+                "\n  try `vanta add {tool}@{}` or widen the constraint",
+                available[0]
+            ));
+        }
+        VtaError::new(Area::Res, 1, msg)
+    }
+}
+
+/// Levenshtein edit distance between two strings (for "did you mean").
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
 }
 
 /// Pick the artifact for a specific platform out of a resolution.
