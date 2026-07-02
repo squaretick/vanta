@@ -30,17 +30,20 @@ else
   TEAL=""; BOLD=""; DIM=""; RESET=""
 fi
 
+# $1 = resolved version (e.g. v0.0.3), shown next to the tagline.
 wordmark() {
-  [ -n "$TEAL" ] && printf '%s' "$TEAL"
+  [ -n "$TEAL" ] && printf '%s' "$BOLD$TEAL"
   cat <<'BANNER'
-  #   #  ###  #   # ##### ###
-  #   # #   # ##  #   #  #   #
-  #   # ##### # # #   #  #####
-   # #  #   # #  ##   #  #   #
-    #   #   # #   #   #  #   #
+ __     __          _
+ \ \   / /_ _ _ __ | |_ __ _
+  \ \ / / _` | '_ \| __/ _` |
+   \ V / (_| | | | | || (_| |
+    \_/ \__,_|_| |_|\__\__,_|
 BANNER
   [ -n "$RESET" ] && printf '%s' "$RESET"
-  printf '%sEvery developer tool, one command.%s\n\n' "$DIM" "$RESET"
+  printf '%s every developer tool, one command%s' "$DIM" "$RESET"
+  [ -n "${1:-}" ] && printf '  %s%s%s' "$TEAL" "$1" "$RESET"
+  printf '\n\n'
 }
 
 step() { printf '%s▸%s %s\n' "$TEAL" "$RESET" "$1"; }
@@ -131,9 +134,9 @@ install_bin() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-wordmark
 detect_target
 resolve_version
+wordmark "$version"
 
 base="${PRIMARY_BIN}-${version}-${target}"
 archive="${base}.${ext}"
